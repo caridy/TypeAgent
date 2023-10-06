@@ -35,6 +35,7 @@
     "README.md"
   ],
   "dependencies": {
+    "langsmith": "^0.0.41",
     "typechat": "^0.0.10"
   },
   "devDependencies": {

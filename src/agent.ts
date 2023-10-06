@@ -1,7 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { IBaseAgent } from "./agentSchema";
-import { Program, createProgramTranslator, evaluateJsonProgram, getData, TypeChatJsonTranslator, TypeChatLanguageModel } from "typechat";
+import { Program, evaluateJsonProgram, getData, TypeChatJsonTranslator, TypeChatLanguageModel } from "typechat";
+import { Tracer } from "./tracer";
+import { ProgramPlanner } from "./planner";
 
 // importing the schema source for IBaseAgent needed to construct the agent prompt
 const IBaseAgentSchema = fs.readFileSync(path.join(__dirname, "agentSchema.ts"), "utf8");
@@ -15,23 +17,36 @@ export abstract class Agent<T> implements Asyncify<IBaseAgent> {
   abstract name: string;
   abstract description: string;
 
-  #translator: TypeChatJsonTranslator<Program>;
+  #planner: ProgramPlanner;
 
   // @param schema — The TypeScript source code for the target API. The source code must export a type named IAgent.
   constructor(model: TypeChatLanguageModel, agentSchema: string) {
     const schema = this.#generateAgentSchema(agentSchema);
-    this.#translator = createProgramTranslator(model, schema);
+    this.#planner = new ProgramPlanner(model, schema);
   }
 
-  async execute(prompt: string): Promise<string> {
-    const response = await this.#translator.translate(prompt);
-    if (!response.success) {
-        return response.message;
+  async execute(prompt: string, parentTracer: Tracer): Promise<string> {
+    const childTracer = await parentTracer.createChild({
+      name: `Agent.${this.name}`,
+      run_type: "chain",
+      inputs: {
+        prompt,
+      },
+    });
+    await childTracer.postRun();
+    const plan = await this.#planner.plan(prompt, childTracer);
+    if (!plan.success) {
+        return plan.message;
     }
-    const program = response.data;
-    console.log(getData(this.#translator.validator.createModuleTextFromJson(program)));
-    console.log("Running program:");
-    return await evaluateJsonProgram(program, this.#handleCall.bind(this)) as string;
+    const program = plan.data;
+    const response = await evaluateJsonProgram(program, this.#handleCall.bind(this, childTracer)) as string;
+    await childTracer.end({
+      outputs: {
+        response
+      }
+    });
+    childTracer.patchRun();
+    return response;
   }
 
   async getProperty<O extends object, P extends PropertyKey>(
@@ -73,13 +88,25 @@ export type API = IBaseAgent & IAgent;
 `;
   }
 
-  async #handleCall(name: string, args: unknown[]): Promise<unknown> {
+  async #handleCall(parentTracer: Tracer, name: string, args: unknown[]): Promise<unknown> {
     if (name in (this as (Asyncify<T> & Asyncify<IBaseAgent>))) {
-      console.log(`Calling ${this.name}[${name}] with arguments: ${JSON.stringify(args, null, 2)})`);
+      const childTracer = await parentTracer.createChild({
+        name: `Agent.${this.name}.${name}`,
+        run_type: "tool",
+        inputs: {
+          args,
+        },
+      });
+      await childTracer.postRun();
       // calling a method of the agent as part of the program
       // @ts-ignore
       const response = await this[name as keyof T](...args);
-      console.log(`Skill ${this.name}[${name}] Response: \n${response}`);
+      await childTracer.end({
+        outputs: {
+          response
+        }
+      });
+      childTracer.patchRun();
       return response;
     }
     throw new TypeError(`Invalid Skill ${this.name}[${name}]`);

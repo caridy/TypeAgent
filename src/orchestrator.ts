@@ -1,9 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { Agent } from "./agent";
-import { Program, createProgramTranslator, TypeChatJsonTranslator, TypeChatLanguageModel } from "typechat";
+import { createProgramTranslator, TypeChatLanguageModel } from "typechat";
 import { AgentExecutor } from "./executor";
-import { Context, EscalationMessage, FinalAnswer, History } from "./orchestratorSchema";
+import { EscalationMessage, FinalAnswer } from "./orchestratorSchema";
+import { createRootRun } from "./tracer";
+import { ProgramPlanner } from "./planner";
 
 // importing the schema source for IOrchestratorAgent needed to construct the orchestrator prompt
 const IOrchestratorAgentSchema = fs.readFileSync(path.join(__dirname, "orchestratorSchema.ts"), "utf8");
@@ -11,11 +13,17 @@ const IOrchestratorAgentSchema = fs.readFileSync(path.join(__dirname, "orchestra
 export class OrchestratorAgent {
   #agents = new Map<string, Agent<any>>();
   #capabilities = new Map<string, string>();
-  #translator: TypeChatJsonTranslator<Program> | undefined;
+  #planner: ProgramPlanner | undefined;
   #model: TypeChatLanguageModel;
+  #maxTurns = 3;
 
-  constructor(model: TypeChatLanguageModel) {
+  constructor(model: TypeChatLanguageModel, options?: {
+    maxTurns?: number;
+  }) {
     this.#model = model;
+    if (options?.maxTurns) {
+      this.#maxTurns = options.maxTurns;
+    }
   }
 
   registerAgent(agent: Agent<any>) {
@@ -24,10 +32,31 @@ export class OrchestratorAgent {
     this.#capabilities.set(name, description);
   }
 
-  async execute(prompt: string, context: Context, history: History): Promise<EscalationMessage | FinalAnswer> {
-    const translator = this.#getTranslator();
-    const executor = new AgentExecutor(this.#agents, translator, context, history);
-    return await executor.ThinkMore(prompt, []);
+  async execute(prompt: string): Promise<EscalationMessage | FinalAnswer> {
+    const planner = this.#getPlanner();
+    const tracer = await createRootRun(prompt, {
+      // Serialized representation of the orchestrator
+      maxTurns: this.#maxTurns,
+      agents: [...this.#agents.keys()], // List of available agents
+    });
+    await tracer.postRun();
+    const executor = new AgentExecutor(this.#agents, planner, {
+      maxTurns: this.#maxTurns,
+      tracer,
+    });
+    const result = await executor.ThinkMore(prompt, []);
+    if ("CompleteAssignment" in result) {
+      await tracer.end({
+        outputs: result,
+      });
+    } else {
+      await tracer.end({
+        error: result.Error,
+        outputs: result,
+      });
+    }
+    tracer.patchRun();
+    return result;
   }
 
   #renderCapabilities() {
@@ -36,12 +65,12 @@ export class OrchestratorAgent {
 ${name}(prompt: string): string;`).join("\n");
   }
 
-  #getTranslator() {
-    if (!this.#translator) {
+  #getPlanner() {
+    if (!this.#planner) {
       const schema = this.#generateOrchestratorSchema();
-      this.#translator = createProgramTranslator(this.#model, schema);
+      this.#planner = new ProgramPlanner(this.#model, schema);
     }
-    return this.#translator;
+    return this.#planner;
   }
 
   #generateOrchestratorSchema() {
