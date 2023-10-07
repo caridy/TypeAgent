@@ -2,10 +2,12 @@
   "name": "typeagent",
   "version": "0.0.1",
   "license": "MIT",
-  "description": "TypeAgent is an experimental opinionated library that makes it easy to build AI Agents using typescript.",
+  "description": "TypeAgent is an experimental opinionated library that makes it easy to build generative AI Agents using typescript.",
   "keywords": [
     "schema",
     "LLM",
+    "agent",
+    "assistant",
     "prompt",
     "TypeScript",
     "validation"
@@ -22,7 +24,7 @@
     "build": "tsc -p src",
     "build-all": "npm run build --workspaces",
     "prepare": "npm run build-all",
-    "postbuild": "copyfiles -u 1 src/*Schema.ts dist"
+    "postbuild": "copyfiles -u 1 src/*.d.ts dist"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

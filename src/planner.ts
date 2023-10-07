@@ -81,25 +81,16 @@ export class ProgramPlanner {
       if (!response.success) {
         return response;
       }
-      const childRun = await tracer.createChild({
-        name: "TypeChat.Validation",
-        run_type: "parser",
-        inputs: {
-          prompts: [prompt],
-        },
-      });
-      await childRun.postRun();
       const responseText = response.data;
+      const childRun = await tracer.sub("TypeChat.Validation", "parser", {
+        responseText,
+      });
       const startIndex = responseText.indexOf("{");
       const endIndex = responseText.lastIndexOf("}");
       if (!(startIndex >= 0 && endIndex > startIndex)) {
-        await childRun.end({
-          error: `Response is not a valid JSON structure`,
-          outputs: {
-            generations: [responseText],
-          },
+        await childRun.error(`Response is not a valid JSON structure`, {
+          generations: [responseText],
         });
-        await childRun.patchRun();
         return error(`Response is not JSON:\n${responseText}`);
       }
       const jsonText = responseText.slice(startIndex, endIndex + 1);
@@ -108,17 +99,10 @@ export class ProgramPlanner {
         ? this.#extendedValidation(schemaValidation.data)
         : schemaValidation;
       if (validation.success) {
-        await childRun.end({
-          outputs: validation,
-        });
-        await childRun.patchRun();
+        await childRun.success(validation);
         return validation;
       }
-      await childRun.end({
-        error: `Program validation failed`,
-        outputs: validation,
-      });
-      await childRun.patchRun();
+      await childRun.error(`Program validation failed`, validation);
       if (!attemptRepair) {
         return error(
           `JSON validation failed: ${validation.message}\n${jsonText}`
@@ -132,30 +116,19 @@ export class ProgramPlanner {
   }
 
   async #complete(prompt: string, parentTracer: Tracer): Promise<Result<string>> {
-    const childRun = await parentTracer.createChild({
-      name: "TypeChat.Planner",
-      run_type: "llm",
-      inputs: {
-        prompts: [prompt],
-      },
+    const childRun = await parentTracer.sub("TypeChat.Planner", "llm", {
+      prompts: [prompt],
     });
-    await childRun.postRun();
     const response = await this.#model.complete(prompt);
     if (response.success) {
-      await childRun.end({
-        outputs: {
-          generations: [response],
-        },
+      await childRun.success({
+        generations: [response],
       });
     } else {
-      await childRun.end({
-        error: response.message,
-        outputs: {
-          generations: [response],
-        },
+      await childRun.error(response.message, {
+        generations: [response],
       });
     }
-    childRun.patchRun();
     return response;
   }
 

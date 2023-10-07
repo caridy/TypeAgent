@@ -1,14 +1,14 @@
 import fs from "fs";
 import path from "path";
 import { Agent } from "./agent";
-import { createProgramTranslator, TypeChatLanguageModel } from "typechat";
+import { TypeChatLanguageModel } from "typechat";
 import { AgentExecutor } from "./executor";
 import { EscalationMessage, FinalAnswer } from "./orchestratorSchema";
-import { createRootRun } from "./tracer";
+import { Tracer, createDefaultTracer } from "./tracer";
 import { ProgramPlanner } from "./planner";
 
 // importing the schema source for IOrchestratorAgent needed to construct the orchestrator prompt
-const IOrchestratorAgentSchema = fs.readFileSync(path.join(__dirname, "orchestratorSchema.ts"), "utf8");
+const IOrchestratorAgentSchema = fs.readFileSync(path.join(__dirname, "orchestratorSchema.d.ts"), "utf8");
 
 export class OrchestratorAgent {
   #agents = new Map<string, Agent<any>>();
@@ -32,30 +32,24 @@ export class OrchestratorAgent {
     this.#capabilities.set(name, description);
   }
 
-  async execute(prompt: string): Promise<EscalationMessage | FinalAnswer> {
+  async execute(prompt: string, parentTracer?: Tracer): Promise<EscalationMessage | FinalAnswer> {
     const planner = this.#getPlanner();
-    const tracer = await createRootRun(prompt, {
-      // Serialized representation of the orchestrator
+    parentTracer = parentTracer ?? await createDefaultTracer();
+    const tracer = await parentTracer.sub(`Orchestrator`, "chain", {
+      prompt,
       maxTurns: this.#maxTurns,
       agents: [...this.#agents.keys()], // List of available agents
     });
-    await tracer.postRun();
     const executor = new AgentExecutor(this.#agents, planner, {
       maxTurns: this.#maxTurns,
       tracer,
     });
     const result = await executor.ThinkMore(prompt, []);
     if ("CompleteAssignment" in result) {
-      await tracer.end({
-        outputs: result,
-      });
+      await tracer.success(result);
     } else {
-      await tracer.end({
-        error: result.Error,
-        outputs: result,
-      });
+      await tracer.error(result.Error, result);
     }
-    tracer.patchRun();
     return result;
   }
 

@@ -1,102 +1,100 @@
-// This module is an abstraction over RunTree from LangSmith package.
+type TracerType =
+  | "tool"
+  | "chain"
+  | "llm"
+  | "retriever"
+  | "embedding"
+  | "prompt"
+  | "parser";
 
 export type Tracer = {
-  postRun(): Promise<void>;
-  patchRun(): Promise<void>;
-  createChild(options: {
-    name: string;
-    run_type: string;
-    inputs: {
-      [key: string]: unknown;
-    };
-  }): Promise<Tracer>;
-  end(options: {
-    error?: string,
-    outputs: {
-      [key: string]: unknown;
-    };
-  }): Promise<void>;
-};
-
-export async function createRootRun(prompt: string, serialized: {
-  agents: string[];
-  maxTurns: number;
-}): Promise<Tracer> {
-  const { RunTree } = await import("langsmith");
-  const rootRun = new RunTree({
-    name: "Orchestrator",
-    run_type: "chain",
-    inputs: {
-      prompt,
-    },
-    // Serialized representation of this chain
-    serialized,
-  });
-  return rootRun;
-}
-
-export type TracerNew = {
-  createChild(
+  sub(
     name: string,
-    type: string,
-    input: {
+    type: TracerType,
+    data: {
       [key: string]: unknown;
-    },
-  ): Promise<TracerNew>;
-  error(message: string, output?: {
-    [key: string]: unknown;
-  }): Promise<void>;
-  done(output: {
-    [key: string]: unknown;
-  }): Promise<void>;
+    }
+  ): Promise<Tracer>;
+  error(
+    message: string,
+    output?: {
+      [key: string]: unknown;
+    }
+  ): Promise<void>;
+  success(output: { [key: string]: unknown }): Promise<void>;
 };
 
-export async function createTracer(prompt: string, serialized: {
-  agents: string[];
-  maxTurns: number;
-}): Promise<TracerNew> {
+// LangSmith RunTree has a very cumbersone API. This function is a wrapper
+// to make it easier to use it in this project, as well as to make it easier
+// to implement a local debugger when LangSmith is not available.
+export async function createLangSmithTracer(
+  name: string,
+  type: TracerType,
+  data: Record<string, unknown>
+): Promise<Tracer> {
   const { RunTree } = await import("langsmith");
 
   const rootRun = new RunTree({
-    name: "Orchestrator",
-    run_type: "chain",
-    inputs: {
-      prompt,
-    },
-    // Serialized representation of this chain
-    serialized,
+    name: name,
+    run_type: type,
+    inputs: data,
   });
+  await await rootRun.postRun();
 
-  // LangSmith RunTree has a very cumbersone API. This function is a wrapper
-  // to make it easier to use it in this project, as well as to make it easier
-  // to implement a local debugger when LangSmith is not available.
-  const createLandSmithTracer = (r: typeof rootRun): TracerNew => {
+  const createTracer = (r: typeof rootRun): Tracer => {
     return {
-      async createChild(
-        name: string,
-        type: string,
-        input: {
-          [key: string]: unknown;
-        },
-      ): Promise<TracerNew> {
-        const child = await r.createChild({ name, run_type: type, inputs: input });
+      async sub(name, type, data) {
+        const child = await r.createChild({
+          name,
+          run_type: type,
+          inputs: data,
+        });
         await child.postRun();
-        return createLandSmithTracer(child);
+        return createTracer(child);
       },
-      async error(message: string, output?: {
-        [key: string]: unknown;
-      }): Promise<void> {
+      async error(message, output?) {
         await r.end({ error: message, outputs: output });
         await r.patchRun();
       },
-      async done(output: {
-        [key: string]: unknown;
-      }): Promise<void> {
+      async success(output) {
         await r.end({ outputs: output });
         await r.patchRun();
       },
     };
   };
 
-  return createLandSmithTracer(rootRun);
+  return createTracer(rootRun);
+}
+
+export async function createDefaultTracer(): Promise<Tracer> {
+  const tracer: Tracer = {
+    async sub() {
+      return tracer;
+    },
+    async error() {},
+    async success() {},
+  };
+  return tracer;
+}
+
+export async function createConsoleTracer(
+  name: string,
+  type: TracerType,
+  data: Record<string, unknown>
+): Promise<Tracer> {
+  console.log(`[${type}: ${name}] Running...`);
+  return {
+    async sub(newName, newType, data) {
+      console.log(`[${type}: ${name}] => [${newType}: ${newName}]`);    
+      return createConsoleTracer(newName, newType, data);
+    },
+    async error(message, output?) {
+      console.error(`[${type}: ${name}] Error: ${message}`);
+      console.debug(JSON.stringify({ input: data, output }, null, 2));
+    },
+    async success(output) {
+      console.log(`[${type}: ${name}] Ok`);
+      console.debug(JSON.stringify({ input: data, output }, null, 2));
+    },
+  };
 }

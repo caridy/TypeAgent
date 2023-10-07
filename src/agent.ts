@@ -1,12 +1,12 @@
 import fs from "fs";
 import path from "path";
 import { IBaseAgent } from "./agentSchema";
-import { Program, evaluateJsonProgram, getData, TypeChatJsonTranslator, TypeChatLanguageModel } from "typechat";
-import { Tracer } from "./tracer";
+import { evaluateJsonProgram, TypeChatLanguageModel } from "typechat";
+import { createDefaultTracer, Tracer } from "./tracer";
 import { ProgramPlanner } from "./planner";
 
 // importing the schema source for IBaseAgent needed to construct the agent prompt
-const IBaseAgentSchema = fs.readFileSync(path.join(__dirname, "agentSchema.ts"), "utf8");
+const IBaseAgentSchema = fs.readFileSync(path.join(__dirname, "agentSchema.d.ts"), "utf8");
 
 export type Asyncify<T> = {
   [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<R> : never;
@@ -25,27 +25,20 @@ export abstract class Agent<T> implements Asyncify<IBaseAgent> {
     this.#planner = new ProgramPlanner(model, schema);
   }
 
-  async execute(prompt: string, parentTracer: Tracer): Promise<string> {
-    const childTracer = await parentTracer.createChild({
-      name: `Agent.${this.name}`,
-      run_type: "chain",
-      inputs: {
-        prompt,
-      },
+  async execute(prompt: string, parentTracer?: Tracer): Promise<string> {
+    parentTracer = parentTracer ?? await createDefaultTracer();
+    const childTracer = await parentTracer.sub(`Agent.${this.name}`, "chain",{
+      prompt,
     });
-    await childTracer.postRun();
     const plan = await this.#planner.plan(prompt, childTracer);
     if (!plan.success) {
         return plan.message;
     }
     const program = plan.data;
     const response = await evaluateJsonProgram(program, this.#handleCall.bind(this, childTracer)) as string;
-    await childTracer.end({
-      outputs: {
-        response
-      }
+    await childTracer.success({
+      response
     });
-    childTracer.patchRun();
     return response;
   }
 
@@ -90,23 +83,15 @@ export type API = IBaseAgent & IAgent;
 
   async #handleCall(parentTracer: Tracer, name: string, args: unknown[]): Promise<unknown> {
     if (name in (this as (Asyncify<T> & Asyncify<IBaseAgent>))) {
-      const childTracer = await parentTracer.createChild({
-        name: `Agent.${this.name}.${name}`,
-        run_type: "tool",
-        inputs: {
-          args,
-        },
+      const childTracer = await parentTracer.sub(`Agent.${this.name}.${name}`, "tool",{
+        args,
       });
-      await childTracer.postRun();
       // calling a method of the agent as part of the program
       // @ts-ignore
       const response = await this[name as keyof T](...args);
-      await childTracer.end({
-        outputs: {
-          response
-        }
+      await childTracer.success({
+        response
       });
-      childTracer.patchRun();
       return response;
     }
     throw new TypeError(`Invalid Skill ${this.name}[${name}]`);

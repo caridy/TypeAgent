@@ -1,5 +1,5 @@
 import { Agent } from "./agent";
-import { Program, evaluateJsonProgram, getData, TypeChatJsonTranslator } from "typechat";
+import { evaluateJsonProgram } from "typechat";
 
 import type { AgentResponses, EscalationMessage, FinalAnswer, IOrchestratorAgent, Scratchpad } from "./orchestratorSchema";
 import { Tracer } from "./tracer";
@@ -36,21 +36,13 @@ export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
     const agent = this.#agents.get(name);
     if (agent) {
       const [ prompt ] = args as [ string ];
-      const childTracer = await parentTracer.createChild({
-        name: `Orchestrator.${name}`,
-        run_type: "chain",
-        inputs: {
-          prompt,
-        },
+      const childTracer = await parentTracer.sub(`Orchestrator.${name}`, "chain", {
+        prompt,
       });
-      await childTracer.postRun();
       const response = await agent.execute(prompt, childTracer);
-      await childTracer.end({
-        outputs: {
-          response 
-        }
+      await childTracer.success({
+        response 
       });
-      childTracer.patchRun();
       return {
         command: `IAgents.${name}`,
         input: prompt,
@@ -91,23 +83,13 @@ export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
         Escalation: `Maximun number of turns reached (${this.#maxTurns}). Please try again later.`,
       };
     }
-    console.log(`Thinking... (Turn: ${this.#turns})`);
     const instructions = this.#createInstructions(prompt, responses, scratchpad);
-    const childTracer = await this.#rootTracer.createChild({
-      name: "Orchestrator.Thinking",
-      run_type: "tool",
-      inputs: {
-        prompt: instructions
-      },
+    const childTracer = await this.#rootTracer.sub(`Orchestrator.Thinking.Turn[${this.#turns}]`, "tool", {
+      prompt: instructions
     });
-    await childTracer.postRun();
     const response = await this.#planner.plan(instructions, childTracer);
     if (!response.success) {
-        await childTracer.end({
-          error: response.message,
-          outputs: response,
-        });
-        await childTracer.patchRun(); 
+        await childTracer.error(response.message, response);
         return {
           Error: 'InternalError',
           Escalation: response.message,
@@ -115,8 +97,7 @@ export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
     }
     const program = response.data;
     const outputs = await evaluateJsonProgram(program, this.#handleCall.bind(this, childTracer)) as FinalAnswer | EscalationMessage;
-    await childTracer.end({ outputs });
-    childTracer.patchRun();
+    await childTracer.success(outputs);
     return outputs;
   }
 
