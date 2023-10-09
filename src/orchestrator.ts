@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Agent } from "./agent";
-import { TypeChatLanguageModel } from "typechat";
+import { TypeChatLanguageModel, error, success } from "typechat";
 import { AgentExecutor } from "./executor";
 import { EscalationMessage, FinalAnswer } from "./orchestratorSchema";
 import { Tracer, createDefaultTracer } from "./tracer";
@@ -62,7 +62,20 @@ ${name}(prompt: string): string;`).join("\n");
   #getPlanner() {
     if (!this.#planner) {
       const schema = this.#generateOrchestratorSchema();
-      this.#planner = new ProgramPlanner(this.#model, schema);
+      this.#planner = new ProgramPlanner(this.#model, schema, {
+        maxRepairAttempts: 2,
+        validation: (data) => {
+          const len = data["@steps"].length;
+          const firstStep = data["@steps"][0];
+          const lastStep = data["@steps"][len - 1];
+          if (lastStep["@func"] === "CompleteAssignment" || firstStep["@func"] === "DeadEnd") {
+            return len === 2 && firstStep["@func"] === "WriteThoughts" ? success(data) : error(`Invalid final turn program structure`);
+          } else if (lastStep["@func"] === "ThinkMore") {
+            return len > 2 && firstStep["@func"] === "WriteThoughts" ? success(data) : error(`Invalid turn program structure`);
+          }
+          return error(`Invalid program structure`);
+        }
+      });
     }
     return this.#planner;
   }

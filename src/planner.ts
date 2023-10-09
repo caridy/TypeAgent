@@ -1,7 +1,6 @@
 import {
   Program,
   Result,
-  Success,
   TypeChatJsonValidator,
   TypeChatLanguageModel,
   createJsonValidator,
@@ -42,15 +41,18 @@ export type ResultReference = {
 export class ProgramPlanner {
   #model: TypeChatLanguageModel;
   #validator: TypeChatJsonValidator<Program>;
+  #maxRepairAttempts: number;
+  #extendedValidation: (data: Program) => Result<Program>;
 
-  constructor(model: TypeChatLanguageModel, schema: string) {
+  constructor(model: TypeChatLanguageModel, schema: string, options?: {
+    maxRepairAttempts?: number;
+    validation?: (data: Program) => Result<Program>
+  }) {
     this.#model = model;
     this.#validator = createJsonValidator<Program>(schema, "Program");
     this.#validator.createModuleTextFromJson = createModuleTextFromProgram;
-  }
-
-  #extendedValidation(data: Program): Success<Program> {
-    return success(data);
+    this.#maxRepairAttempts = options?.maxRepairAttempts ?? 2;
+    this.#extendedValidation = options?.validation ?? ((data) => success(data));
   }
 
   #createRequestPrompt(request: string): string {
@@ -74,10 +76,11 @@ export class ProgramPlanner {
   }
 
   async #translate(request: string, tracer: Tracer): Promise<Result<Program>> {
-    let prompt = this.#createRequestPrompt(request);
-    let attemptRepair = true;
+    const prompt = this.#createRequestPrompt(request);
+    let currentPrompt = prompt;
+    let repairAttempts = 0;
     while (true) {
-      const response = await this.#complete(prompt, tracer);
+      const response = await this.#complete(currentPrompt, tracer);
       if (!response.success) {
         return response;
       }
@@ -103,15 +106,15 @@ export class ProgramPlanner {
         return validation;
       }
       await childRun.error(`Program validation failed`, validation);
-      if (!attemptRepair) {
+      repairAttempts++;
+      if (repairAttempts > this.#maxRepairAttempts) {
         return error(
           `JSON validation failed: ${validation.message}\n${jsonText}`
         );
       }
-      prompt += `${responseText}\n${this.#createRepairPrompt(
+      currentPrompt = `${prompt}${responseText}\n${this.#createRepairPrompt(
         validation.message
       )}`;
-      attemptRepair = false;
     }
   }
 
