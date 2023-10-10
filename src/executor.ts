@@ -1,7 +1,7 @@
 import { Agent } from "./agent";
 import { evaluateJsonProgram } from "typechat";
 
-import type { AgentResponses, EscalationMessage, FinalAnswer, IOrchestratorAgent, Scratchpad } from "./orchestratorSchema";
+import type { AgentResponse, EscalationMessage, FinalAnswer, OrchestratorInterface, ReflectionRecord } from "./orchestratorSchema";
 import { Tracer } from "./tracer";
 import { ProgramPlanner } from "./planner";
 
@@ -9,11 +9,11 @@ type Asyncify<T> = {
   [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<R> : never;
 };
 
-export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
+export class AgentExecutor implements Asyncify<OrchestratorInterface> {
   #agents: Map<string, Agent<any>>;
   #planner: ProgramPlanner;
   #turns = 0;
-  #maxTurns;
+  #maxTurns: number;
   #rootTracer: Tracer;
 
   constructor(agents: Map<string, Agent<any>>, planner: ProgramPlanner, options: {
@@ -43,16 +43,12 @@ export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
       await childTracer.success({
         response 
       });
-      return {
-        command: `IAgents.${name}`,
-        input: prompt,
-        output: response,
-      };
+      return response;
     }
     throw new TypeError(`Invalid Agent ${name}`);
   }
 
-  async WriteThoughts(input: Scratchpad): Promise<Scratchpad> {
+  async WriteThoughts(input: ReflectionRecord): Promise<ReflectionRecord> {
     return input;
   }
 
@@ -71,11 +67,16 @@ export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
     };
   }
 
-  async ThinkMore(
-    prompt: string,
-    responses: AgentResponses[],
-    scratchpad?: Scratchpad,
+  async NextTurn(
+    originalPrompt: string,
+    reflections: ReflectionRecord,
+    agentOutputs: AgentResponse[]
   ): Promise<EscalationMessage | FinalAnswer> {
+    const prompt = this.#createInstructions(originalPrompt, reflections, agentOutputs);
+    return await this.execute(prompt);
+  }
+
+  async execute(prompt: string): Promise<EscalationMessage | FinalAnswer> {
     this.#turns++;
     if (this.#turns > this.#maxTurns) {
       return {
@@ -83,11 +84,10 @@ export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
         Escalation: `Maximun number of turns reached (${this.#maxTurns}). Please try again later.`,
       };
     }
-    const instructions = this.#createInstructions(prompt, responses, scratchpad);
     const childTracer = await this.#rootTracer.sub(`Orchestrator.Thinking.Turn[${this.#turns}]`, "tool", {
-      prompt: instructions
+      prompt
     });
-    const response = await this.#planner.plan(instructions, childTracer);
+    const response = await this.#planner.plan(prompt, childTracer);
     if (!response.success) {
         await childTracer.error(response.message, response);
         return {
@@ -102,23 +102,23 @@ export class AgentExecutor implements Asyncify<IOrchestratorAgent> {
   }
 
   #createInstructions(
-    prompt: string,
-    responses: AgentResponses[],
-    scratchpad?: Scratchpad,
+    originalPrompt: string,
+    reflections?: ReflectionRecord,
+    agentOutputs?: AgentResponse[],
   ): string {
-    if (this.#turns === 1) {
+    if (this.#turns === 0) {
       // first turn
-      return prompt;
+      return originalPrompt;
     } else {
       // subsequent turns
       return (
-        `Program for turn #${this.#turns} must be implemented based on the interpretation and results from the previous turn described below.\n"""\n` +
+        `Write a TurnProgram or FinalTurnProgram for turn #${this.#turns + 1} after interpreting the results in AgentResponse[] from turn #${this.#turns} that are listed below.\n"""\n` +
         `The following is the original prompt from user:\n` +
-        `"""\n${prompt}\n"""\n` +
-        `The following is the "Scratchpad" value from turn #${this.#turns - 1}:\n` +
-        `"""\n${JSON.stringify(scratchpad, null, 2)}\n"""\n` +
-        `The following are the "AgentResponses" values from #${this.#turns - 1}:\n` +
-        `"""\n${JSON.stringify(responses, null, 2)}`
+        `"""\n${originalPrompt}\n"""\n` +
+        `The following is the ReflectionRecord value from turn #${this.#turns}:\n` +
+        `"""\n${JSON.stringify(reflections, null, 2)}\n"""\n` +
+        `The following are the AgentResponse[] values from turn #${this.#turns}:\n` +
+        `"""\n${JSON.stringify(agentOutputs, null, 2)}`
       );
     } 
   }

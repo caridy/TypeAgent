@@ -7,8 +7,8 @@ import { EscalationMessage, FinalAnswer } from "./orchestratorSchema";
 import { Tracer, createDefaultTracer } from "./tracer";
 import { ProgramPlanner } from "./planner";
 
-// importing the schema source for IOrchestratorAgent needed to construct the orchestrator prompt
-const IOrchestratorAgentSchema = fs.readFileSync(path.join(__dirname, "orchestratorSchema.d.ts"), "utf8");
+// importing the schema source for OrchestratorInterface needed to construct the orchestrator prompt
+const OrchestratorInterfaceSchema = fs.readFileSync(path.join(__dirname, "orchestratorSchema.d.ts"), "utf8");
 
 export class OrchestratorAgent {
   #agents = new Map<string, Agent<any>>();
@@ -44,7 +44,7 @@ export class OrchestratorAgent {
       maxTurns: this.#maxTurns,
       tracer,
     });
-    const result = await executor.ThinkMore(prompt, []);
+    const result = await executor.execute(prompt);
     if ("CompleteAssignment" in result) {
       await tracer.success(result);
     } else {
@@ -70,7 +70,7 @@ ${name}(prompt: string): string;`).join("\n");
           const lastStep = data["@steps"][len - 1];
           if (lastStep["@func"] === "CompleteAssignment" || firstStep["@func"] === "DeadEnd") {
             return len === 2 && firstStep["@func"] === "WriteThoughts" ? success(data) : error(`Invalid final turn program structure`);
-          } else if (lastStep["@func"] === "ThinkMore") {
+          } else if (lastStep["@func"] === "NextTurn") {
             return len > 2 && firstStep["@func"] === "WriteThoughts" ? success(data) : error(`Invalid turn program structure`);
           }
           return error(`Invalid program structure`);
@@ -81,13 +81,13 @@ ${name}(prompt: string): string;`).join("\n");
   }
 
   #generateOrchestratorSchema() {
-    return `${IOrchestratorAgentSchema}
+    return `${OrchestratorInterfaceSchema}
 
 type IAgents = {
   ${this.#renderCapabilities()}
 }
 
-export type API = IOrchestratorAgent & IAgents;
+export type API = OrchestratorInterface & IAgents;
 `;
   }
 

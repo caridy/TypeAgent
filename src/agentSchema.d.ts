@@ -1,5 +1,14 @@
 /*
-Based on this schema, you must call "OutputMessage" as part of the program. You must pay special attention to missing or insufficient information in user request, in which case an error program with a single step using "ErrorMessage" must be returned.
+You can only create 2 types of programs. You must always follow the correct structure described below:
+
+1. A succeed program must have at least 2 steps, and it looks like this:
+ * Step 1 to N: Call IAgent.* APIs to execute one or more actions
+ * Step N + 1: Call OutputMessage
+
+2. A failure program has only one step, and it looks like this:
+ * Step 1: Call ErrorMessage
+
+If you identify any missing or insufficient data in user request, an error program must be returned.
 */
 
 type PropertyKey = string | number;
@@ -13,14 +22,14 @@ export interface IBaseAgent {
     propertyKey: P,
   ): P extends keyof T ? T[P] : any;
 
-  // Use this to output the result of the program.
-  // You can use previous computations to interpolate those values on the "message"
-  // Interpolations are positional. If no arguments, pass an empty array
   OutputMessage(
-    message: string, // String to be interpolated. Use double brackets notation for the string interpolation (example: "Hi {{0}}!")
-    substitutionList?: any[] // List of substitutions. Must match the number of interpolations within "message".
+    message: string, // Detailed output message with the result of the program execution in natural language.
+    data: { [key: string]: string; } // Key-value pairs of any data that is relevant to the output message or can help to interpret the output message.
   ): string;
 
-  /** Use this to inform that the request cannot be handled. Reason must be as detailed as possible, including information about missing data that if provided, the program can be created. */
-  ErrorMessage(reason: string): string;
+  // Use this to inform that the request cannot be handled.
+  ErrorMessage(
+    // Reason must be as detailed as possible, including information about missing data that if provided, the program can be created.
+    reason: string
+  ): string;
 }

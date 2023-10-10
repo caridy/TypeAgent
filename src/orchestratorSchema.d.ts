@@ -1,66 +1,104 @@
-/*
-The following is a schema definition that describes an orchestrator agent behavior, which implements a set of base methods declared in IOrchestratorAgent, and a set of additional domain-specific agents declared in IAgents to delegate sub-tasks to try to answer the user's request. The orchestrator agent is responsible for creating a program that represents one execution turn. To answer the user's request, it might require multiple turns in order to gather new information.
+/**
+The Orchestrator schema must be used to craft a TurnProgram or a FinalTurnProgram.
+These programs are sequences of function calls that, when executed, progress through the task trying to
+fulfill the original user's request. By following this schema, you ensures the task either progresses
+to a logical conclusion or ends with a proper indication that it can't be completed.
 
-The sequence of steps in the program must always start by calling "WriteThoughts" once to refine your thoughts as you think step-by-step given the information available to you. The program must always end by calling "ThinkMore", "CompleteAssignment" or "DeadEnd" to indicate the end of the current execution turn.
+The Orchestrator can rely on domain-specific agents declared in IAgents to delegate sub-tasks to try to answer the user's request.
+To answer the user's request, it might require multiple turns in order to gather new information, where each turn is represented by a program.
+The Orchestrator can use the results from previous turns to inform the next turn.
 
-By calling "ThinkMore" last, you're indicating that you're gathering new information by calling at least one API before proceeding to the next turn.
-By calling "CompleteAssignment" last, you're indicating that you have completed the task.
-By calling "DeadEnd" last, you're indicating that you cannot help the user with the task.
-On every turn, reflect on past decisions and strategies to refine your approach.
+You can only create 2 types of programs: 1) a turn, and 2) a final turn. You must always follow the correct structure described below:
+
+1. A turn program must have at least 3 steps, and it looks like this:
+ * Step 1: Call WriteThoughts
+ * Step 2 to N: Call IAgent.* to delegate sub-tasks to agents.
+ * Step N + 1: Call NextTurn to indicate the end of the current execution turn.
+
+2. A final turn program has only two steps, and it looks like this:
+ * Step 1: Call WriteThoughts
+ * Step 2: Call CompleteAssignment or DeadEnd to indicate that you have completed the task or you cannot help the user with the task
+
+On every turn, you must reflect on the results and strategies from the previous turn to refine your approach.
 In every turn review and analyze previous thoughts to ensure you are performing to the best of your abilities.
 Every turn and api call has a cost, so be smart and efficient. Aim to complete tasks in the least number of steps.
 */
 
-export type Scratchpad = {
-  // Reason or thoughts
-  reasoning: string,
-  // Short bulleted list that conveys to long-term plan
-  plan: string[],
-  // Is the result is correct, meet the requirements and and based on the real data in the org?
-  critique: string,
-  // Analysis result of the execution and the whole conversation
-  observation: string
+type AtLeastOne<T> = [T, ...T[]];
+
+export type ReflectionRecord = {
+  reasoning: string; // Reason or thoughts. Cannot be empty
+  plan: string[]; // Short bulleted list that conveys the high-level plan. Cannot be empty
+  critique: string; // Is the result is correct, meet the requirements and based on the real data in the org?
+  observation: string; // Analysis result of the execution and the whole Program
 };
 
-/* The final error message when agent cannot help */
+// The final error message when orchestrator cannot help
 export type EscalationMessage = {
   Error: 'DeadEnd' | 'InternalError' | 'StackOverflow',
   Escalation: string,
 };
 
-/* The final message when the orchestrator agent was capable to find an answer */
+// The final message when the orchestrator found an answer
 export type FinalAnswer = {
   CompleteAssignment: string,
 };
 
-export type AgentResponses = {
-  // Name of the agent from IAgents declaration
-  agent: string,
-  // The prompt that was used to call the agent
-  question: string,
-  // The answer from the agent
-  answer: string,
+// Critical information for the orchestrator to reflect and reasoning about the previous turn results to avoid task duplication across turns
+export type AgentResponse = {
+  agent: string; // Name of the agent for sub-task.
+  question: string; // Prompt used to call the agent.
+  answer: string; // Response from the agent.
 };
 
-export interface IOrchestratorAgent {
-  // Use this to write reason or thoughts in the scratchpad.
-  WriteThoughts(input: Scratchpad): Scratchpad;
-  // Use this when assistant cannot help the user.
-  DeadEnd(
-    // Reason that why you cannot help
-    escalation: string
-  ): EscalationMessage;
-  // Use this when the task is completed.
-  CompleteAssignment(
-    // The answer or result of the assigned task.  Please provide user friendly result with insights.
-    answer: string
-  ): FinalAnswer;
-  ThinkMore(
-    // original prompt
-    prompt: string,
-    // output from IAgents.* calls
-    responses: AgentResponses[],
-    // annotations from calling WriteThoughts() 
-    scratchpad?: Scratchpad,
+// Describes the base capabilities of the orchestrator. They can only be used in first and last step of a program.
+export interface OrchestratorInterface {
+  WriteThoughts(input: ReflectionRecord): ReflectionRecord;
+  DeadEnd(escalation: string): EscalationMessage;
+  CompleteAssignment(answer: string): FinalAnswer;
+  NextTurn(
+    // Signifies need for more turns, considering agent feedback and reflections.
+    originalPrompt: string,
+    reflections: ReflectionRecord,
+    agentOutputs: AtLeastOne<AgentResponse>,
   ): EscalationMessage | FinalAnswer;
 }
+
+/**
+ * A TurnProgram represents the flow of a single turn:
+ * - Start with reflection.
+ * - Engage with one or more agents to carry out sub-tasks.
+ * - Conclude with a decision to proceed to another turn or complete the assignment.
+ */
+export type TurnProgram = {
+  "@steps": [
+    { "@func": "WriteThoughts"; "@args": [ReflectionRecord] },
+    {
+      "@func": string; // Name of the agent for sub-task.
+      "@args": [
+        string // Prompt used to call the agent.
+      ],
+    },
+    // ... more agent calls if any
+    {
+      "@func": "NextTurn";
+      "@args": [
+        string, // originalPrompt
+        ReflectionRecord, // must be { "@ref": 0 }
+        AtLeastOne<AgentResponse>, // must be [{ ..., answer: { "@ref": 1 } }, /* reference to AgentResponse for agents call if any */];
+      ];
+    }
+  ];
+};
+
+/**
+ * A FinalTurnProgram captures the concluding steps:
+ * - Start with reflection.
+ * - End with a declaration of task completion or an inability to proceed further.
+ */
+export type FinalTurnProgram = {
+  "@steps": [
+    { "@func": "WriteThoughts"; "@args": [ReflectionRecord] },
+    { "@func": "CompleteAssignment" | "DeadEnd"; "@args": [string] }
+  ];
+};

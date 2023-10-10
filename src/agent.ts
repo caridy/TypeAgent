@@ -51,20 +51,14 @@ export abstract class Agent<T> implements Asyncify<IBaseAgent> {
     return target[propertyKey];
   }
 
-  // Use this to output the result of the program.
-  // You can use previous computations to interpolate those values on the "message"
-  // Interpolations are positional. If no arguments, pass an empty array
   async OutputMessage(
-    message: string, // String to be interpolated. Use double brackets notation for the string interpolation (example: "Hi {{0}}!")
-    substitutionList?: any[] // List of substitutions. Must match the number of interpolations within "message".
+    message: string,
+    data: { [key: string]: string; },
   ): Promise<string> {
-    return message.replace(/\{\{(\d+)\}\}/g, (match, index) => {
-      const substitution = substitutionList?.[index];
-      if (substitution === undefined) {
-        throw "[missing]";
-      }
-      return substitution;
-    });
+    if (Object.keys(data).length > 0) {
+      return `${message}\n\n${JSON.stringify(data, null, 2)}`;
+    }
+    return message;
   }
 
   /** Use this to inform that the request cannot be handled. Reason must be as detailed as possible, including information about missing data that if provided, the program can be created. */
