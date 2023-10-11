@@ -246,9 +246,9 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
       }
       // attempting to repair the program
       repairAttempts++;
-      // remove the last error
-      this.#messages.splice(-1);
       if (repairAttempts > this.#maxRepairAttempts) {
+        // remove the last error to avoid carrying that over to the next turn
+        this.#messages.splice(-1);
         throw new Error('Invalid Program');
       }
     }

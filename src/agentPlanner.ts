@@ -65,15 +65,6 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
     this.#rootTracer = options.tracer ;
   }
 
-  async getProperty<O extends object, P extends PropertyKey>(
-    // the target value must always be a reference to an output from a previous step
-    target: O,
-    propertyKey: P,
-  ): Promise<P extends keyof O ? O[P] : undefined> {
-    // @ts-ignore
-    return target[propertyKey];
-  }
-
   async OutputMessage(
     message: string,
     data: { [key: string]: string; },
@@ -197,8 +188,8 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
         messages.push(this.#createRepairPrompt(validation.message));
       }
       repairAttempts++;
-      messages.splice(-1);
       if (repairAttempts > this.#maxRepairAttempts) {
+        messages.splice(-1);
         throw new Error('Invalid Program');
       }
     }

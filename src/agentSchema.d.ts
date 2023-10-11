@@ -11,17 +11,7 @@ You can only create 2 types of programs. You must always follow the correct stru
 If you identify any missing or insufficient data in user request, an error program must be returned.
 */
 
-type PropertyKey = string | number;
-
 export interface IBaseAgent {
-  // Gets the property of target, equivalent to target[propertyKey].
-  // Useful when you need to pass a piece of an output as input to another function.
-  getProperty<T extends object, P extends PropertyKey>(
-    // the target value must always be a reference to an output from a previous step
-    target: T,
-    propertyKey: P,
-  ): P extends keyof T ? T[P] : any;
-
   OutputMessage(
     message: string, // Detailed output message with the result of the program execution in natural language.
     data: { [key: string]: string; } // Key-value pairs of any data that is relevant to the output message or can help to interpret the output message.
