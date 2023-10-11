@@ -44,24 +44,12 @@ export type FinalAnswer = {
   CompleteAssignment: string,
 };
 
-// Critical information for the orchestrator to reflect and reasoning about the previous turn results to avoid task duplication across turns
-export type AgentResponse = {
-  agent: string; // Name of the agent for sub-task.
-  question: string; // Prompt used to call the agent.
-  answer: string; // Response from the agent.
-};
-
 // Describes the base capabilities of the orchestrator. They can only be used in first and last step of a program.
 export interface OrchestratorInterface {
   WriteThoughts(input: ReflectionRecord): ReflectionRecord;
   DeadEnd(escalation: string): EscalationMessage;
   CompleteAssignment(answer: string): FinalAnswer;
-  NextTurn(
-    // Signifies need for more turns, considering agent feedback and reflections.
-    originalPrompt: string,
-    reflections: ReflectionRecord,
-    agentOutputs: AtLeastOne<AgentResponse>,
-  ): EscalationMessage | FinalAnswer;
+  NextTurn(): void;
 }
 
 /**
@@ -82,11 +70,7 @@ export type TurnProgram = {
     // ... more agent calls if any
     {
       "@func": "NextTurn";
-      "@args": [
-        string, // originalPrompt
-        ReflectionRecord, // must be { "@ref": 0 }
-        AtLeastOne<AgentResponse>, // must be [{ ..., answer: { "@ref": 1 } }, /* reference to AgentResponse for agents call if any */];
-      ];
+      "@args": [];
     }
   ];
 };
