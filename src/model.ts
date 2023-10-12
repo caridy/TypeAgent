@@ -55,38 +55,44 @@ export class OpenAIModel {
     });    
   }
 
-  async complete(prompt: string): Promise<string> {
-    const completion = await this.#openai.chat.completions.create({
+  async complete(prompt: string, parentTracer: Tracer): Promise<string> {
+    const config = {
       model: this.#model,
-      messages: [{ role: "user", content: prompt }],
+      prompt,
       temperature: 0,
       n: 1,
       // max_tokens: 1000, // probably can be removed
-    });
-    if (completion.choices[0].message?.content) {
-      return completion.choices[0].message?.content;
+    };
+    const childRun = await parentTracer.sub(`TypeAgent.Model.${this.#model}`, "llm", config);
+    const completion = await this.#openai.completions.create(config);
+    const { choices } = completion;
+    if (choices[0].text) {
+      await childRun.success({ choices });
+      return choices[0].text;
     }
+    await childRun.error('Invalid Completion Response', {
+      choices,
+    });
     throw new Error(`Invalid Completion Response`);
   }
 
   async chat(messages: ChatMessage[], parentTracer: Tracer): Promise<ChatMessage> {
-    const childRun = await parentTracer.sub(`TypeAgent.Model.${this.#model}`, "llm", {
-      messages,
-    });
-    const completion = await this.#openai.chat.completions.create({
+    const config = {
       model: this.#model,
       messages,
       temperature: 0,
       n: 1,
       // max_tokens: 1000, // probably can be removed
-    });
-    if (completion.choices[0].message?.content) {
-      const message = completion.choices[0].message as ChatMessage;
-      await childRun.success(message);
-      return message;
+    };
+    const childRun = await parentTracer.sub(`TypeAgent.Model.${this.#model}`, "llm", config);
+    const completion = await this.#openai.chat.completions.create(config);
+    const { choices } = completion;
+    if (choices[0].message?.content) {
+      await childRun.success({ choices });
+      return choices[0].message as ChatMessage;
     }
     await childRun.error('Invalid Completion Response', {
-      choice: completion.choices[0],
+      choices,
     });
     throw new Error(`Invalid Completion Response`);
   }

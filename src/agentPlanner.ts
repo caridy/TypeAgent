@@ -48,13 +48,11 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
   #fallbackModel: OpenAIModel | undefined;
   #validator: TypeChatJsonValidator<Program>;
   #maxRepairAttempts: number;
-  #rootTracer: Tracer;
 
   constructor(skills: T, model: OpenAIModel, schema: string, options: {
     // use a more expensive and powerful model as a fallback to handle requests that the main model cannot handle
     fallbackModel?: OpenAIModel | undefined;
     maxRepairAttempts?: number;
-    tracer: Tracer;
   }) {
     this.#skills = skills;
     this.#model = model;
@@ -62,7 +60,6 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
     this.#validator.createModuleTextFromJson = createModuleTextFromProgram;
     this.#maxRepairAttempts = options?.maxRepairAttempts ?? 2;
     this.#fallbackModel = options?.fallbackModel;
-    this.#rootTracer = options.tracer ;
   }
 
   async OutputMessage(
@@ -80,49 +77,77 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
     return `Sorry, I cannot help you with that. ${reason}`;
   }
 
-  async plan(prompt: string): Promise<string> {
-    return await this.#execute(prompt);
-  }
-
-  async #execute(prompt: string): Promise<string> {
-    const childTracer = await this.#rootTracer.sub(
-      `Agent.Planning`,
+  async plan(prompt: string, parentTracer: Tracer): Promise<Program> {
+    const childTracer = await parentTracer.sub(
+      `${this.constructor.name}.plan`,
       "tool",
       {
         prompt,
       }
     );
     try  {
-      const result = await this.#executeRound(this.#model, prompt, childTracer);
+      const program = await this.#createProgram(this.#model, prompt, childTracer);
       await childTracer.success({
-        response: result,
+        program,
       });
-      return result;
-    } catch {
+      return program;
+    } catch (e) {
       if (this.#fallbackModel) {
         try {
-          const result = await this.#executeRound(this.#fallbackModel, prompt, childTracer);
+          const program = await this.#createProgram(this.#fallbackModel, prompt, childTracer);
           await childTracer.success({
-            response: result,
+            program,
           });
-          return result;
-        } catch {}
+          return program;
+        } catch (e) {
+          const { message } = (e as Error);
+          await childTracer.error('Internal Error: Agent failed to handle request with default and fallback models', {
+            message
+          });
+        }
+      } else {
+        const { message } = (e as Error);
+        await childTracer.error('Internal Error: Agent failed to handle request with default model', { message });
       }
     }
-    await childTracer.error('Internal Error: Agent failed to handle request');
-    return 'Internal Error: Agent failed to handle request';
+    throw new Error('Internal Error: Agent failed to handle request');
   }
 
-  async #executeRound(model: OpenAIModel, prompt: string, tracer: Tracer): Promise<string> {
+  async #createProgram(model: OpenAIModel, prompt: string, tracer: Tracer): Promise<Program> {
     const messages: ChatMessage[] = [
       this.#createSystemPrompt(),
       this.#createRequestPrompt(prompt),
     ];
     let response = await this.#translate(model, messages, tracer);
-    const program = response.data;
-    const result = await evaluateJsonProgram(program, this.#handleCall.bind(this, tracer)) as string;
-    // final step was reached
-    return result;
+    return response.data;
+  }
+
+  async execute(program: Program, parentTracer: Tracer): Promise<string> {
+    const childTracer = await parentTracer.sub(
+      `${this.constructor.name}.execute`,
+      "tool",
+      {
+        program,
+      }
+    );
+    try  {
+      const result = await this.#executeProgram(program, childTracer);
+      await childTracer.success({
+        response: result,
+      });
+      return result;
+    } catch (e) {
+      const { message } = (e as Error);
+      await childTracer.error('Internal Error: Agent failed to execute plan', {
+        message: message,
+      });
+      // throw a nice error is important for the orchestrator to be able to handle the error
+      throw new Error(`Agent Failure: ${message}`);
+    }
+  }
+
+  async #executeProgram(program: Program, tracer: Tracer): Promise<string> {
+    return await evaluateJsonProgram(program, this.#handleCall.bind(this, tracer)) as string;
   }
 
   #createSystemPrompt(): ChatMessage {

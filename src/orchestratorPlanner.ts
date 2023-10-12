@@ -170,7 +170,8 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
           prompt,
         }
       );
-      const response = await agent.execute(prompt, childTracer);
+      const program = await agent.plan(prompt, childTracer);
+      const response = await agent.execute(program, childTracer);
       await childTracer.success({
         response,
       });

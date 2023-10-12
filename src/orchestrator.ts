@@ -4,7 +4,7 @@ import { Agent } from "./agent";
 import { OrchestratorPlanner } from "./orchestratorPlanner";
 import { EscalationMessage, FinalAnswer } from "./orchestratorSchema";
 import { Tracer, createDefaultTracer } from "./tracer";
-import { OpenAIModel } from ".";
+import { OpenAIModel } from "./model";
 
 // importing the schema source for OrchestratorInterface needed to construct the orchestrator prompt
 const OrchestratorInterfaceSchema = fs.readFileSync(

@@ -57,7 +57,7 @@ export async function createLangSmithTracer(
         await r.patchRun();
       },
       async success(output) {
-        await r.end({ outputs: output });
+        await r.end(output);
         await r.patchRun();
       },
     };
