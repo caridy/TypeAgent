@@ -1,5 +1,5 @@
 /*
-You can only create 2 types of programs. You must always follow the correct structure described below:
+Interpret the request, and produce the appropriate program. You can only create 2 types of programs. You must always follow the correct structure described below:
 
 1. A succeed program must have at least 2 steps, and it looks like this:
  * Step 1 to N: Call IAgent.* APIs to execute one or more actions
@@ -8,7 +8,12 @@ You can only create 2 types of programs. You must always follow the correct stru
 2. A failure program has only one step, and it looks like this:
  * Step 1: Call ErrorMessage
 
-If you identify any missing or insufficient data in user request, an error program must be returned.
+Pay attention to the following:
+- If there is missing or insufficient data, an error program must be returned.
+- When you're not sure, ask for help, escalate to the user to clarify the request.
+- Ensure you are performing within the confinements of the data model dictated by APIs.
+- Every step in the program has a cost, so be smart and efficient.
+- Not all the data provided might be relevant, so be selective.
 */
 
 export interface IBaseAgent {

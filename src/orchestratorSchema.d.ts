@@ -5,14 +5,14 @@ fulfill the original user's request. By following this schema, you ensures the t
 to a logical conclusion or ends with a proper indication that it can't be completed.
 
 The Orchestrator can rely on domain-specific agents declared in IAgents to delegate sub-tasks to try to answer the user's request.
-To answer the user's request, it might require multiple turns in order to gather new information, where each turn is represented by a program.
+To answer the user's request, it might require multiple turns in order to gather new information, where each turn is represented by a program using one agent.
 The Orchestrator can use the results from previous turns to inform the next turn.
 
 You can only create 2 types of programs: 1) a turn, and 2) a final turn. You must always follow the correct structure described below:
 
 1. A turn program must have at least 3 steps, and it looks like this:
  * Step 1: Call WriteThoughts
- * Step 2 to N: Call IAgent.* to delegate sub-tasks to agents.
+ * Step 2 to N: Call one agent from IAgent.* one or more times.
  * Step N + 1: Call NextTurn to indicate the end of the current execution turn.
 
 2. A final turn program has only two steps, and it looks like this:
@@ -22,6 +22,8 @@ You can only create 2 types of programs: 1) a turn, and 2) a final turn. You mus
 On every turn, you must reflect on the results and strategies from the previous turn to refine your approach.
 In every turn review and analyze previous thoughts to ensure you are performing to the best of your abilities.
 Every turn and api call has a cost, so be smart and efficient. Aim to complete tasks in the least number of steps.
+Choose the best tool for the job. If you are not sure, ask for help.
+Try to recover from errors and dead ends. If you cannot, escalate to the user.
 */
 
 type AtLeastOne<T> = [T, ...T[]];
