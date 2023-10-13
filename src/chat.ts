@@ -92,10 +92,7 @@ export class Chat {
       );
 
     const response = await questionAnalysisTranslator.translate(
-      JSON.stringify({
-        messages,
-        context,
-      }, null, 2)
+      this.#createQuestionPrompt(messages, context)
     );
     if (!response.success) {
       await childTracer.error(response.message, {
@@ -135,15 +132,7 @@ export class Chat {
       );
 
     const response = await answerAnalysisTranslator.translate(
-      JSON.stringify(
-        {
-          conversation: messages,
-          agentInferredQuestion: question,
-          agentAnswer: answerText,
-        },
-        null,
-        2
-      )
+      this.#createAnswerPrompt(messages, question, answerText)
     );
     if (!response.success) {
       await childTracer.error(response.message, {
@@ -156,4 +145,30 @@ export class Chat {
     });
     return response.data;
   }
+
+  #createQuestionPrompt(
+    conversation: ChatMessage[],
+    context: Record<string, unknown>
+  ): string {
+    return `Given the following contextual information about the conversation:\n` +
+      `${JSON.stringify(context)}\n` +
+      `And given the following messages log:\n` +
+      `${JSON.stringify(conversation)}\n` +
+      `Produce the "LastUserMessage" object`;
+  }
+
+  #createAnswerPrompt(
+    conversation: ChatMessage[],
+    question: LastUserMessage,
+    answerText: string,
+  ): string {
+    return `Given the following messages log:\n` +
+      `${JSON.stringify(conversation)}\n` +
+      `Given the following inferred question from the message log:\n` +
+      `${JSON.stringify(question)}\n` +
+      `And given the answer in english:\n` +
+      `${answerText}\n` +
+      `Produce the "Answer" object`;
+  }
+
 }
