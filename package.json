@@ -37,6 +37,7 @@
     "README.md"
   ],
   "dependencies": {
+    "json-to-pretty-yaml": "^1.2.2",
     "langsmith": "^0.0.41",
     "openai": "^4.11.1",
     "typechat": "^0.0.10"

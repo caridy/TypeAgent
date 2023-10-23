@@ -2,7 +2,6 @@ import fs from "fs";
 import path from "path";
 import { Agent } from "./agent";
 import { OrchestratorPlanner } from "./orchestratorPlanner";
-import { EscalationMessage, FinalAnswer } from "./orchestratorSchema";
 import { Tracer, createDefaultTracer } from "./tracer";
 import { OpenAIModel } from "./model";
 
@@ -39,7 +38,7 @@ export class OrchestratorAgent {
   async execute(
     prompt: string,
     parentTracer?: Tracer
-  ): Promise<EscalationMessage | FinalAnswer> {
+  ): Promise<string> {
     parentTracer = parentTracer ?? (await createDefaultTracer());
     const tracer = await parentTracer.sub(`Orchestrator`, "chain", {
       prompt,
@@ -54,14 +53,11 @@ export class OrchestratorAgent {
       {
         maxTurns: this.#maxTurns,
         tracer,
+        request: prompt,
       }
     );
-    const result = await planner.plan(prompt);
-    if ("CompleteAssignment" in result) {
-      await tracer.success(result);
-    } else {
-      await tracer.error(result.Error, result);
-    }
+    const result = await planner.plan();
+    await tracer.success({ response: result });
     return result;
   }
 
@@ -70,7 +66,10 @@ export class OrchestratorAgent {
       .map(
         ([name, description]) =>
           `// ${description}
-${name}(prompt: string): string;`
+${name}(
+  // a program specifications for an agent to write a program that can answer the question. the agent does not have access to the Orchestrator information, this prompt must be self contained and include all relevant values inline.
+  prompt: string
+): string;`
       )
       .join("\n");
   }
@@ -78,11 +77,11 @@ ${name}(prompt: string): string;`
   #generateOrchestratorSchema() {
     return `${OrchestratorInterfaceSchema}
 
-type IAgents = {
+type AgentsCapabilities = {
   ${this.#renderCapabilities()}
 }
 
-export type API = OrchestratorInterface & IAgents;
+export type API = ReActBaseCapabilities & AgentsCapabilities;
 `;
   }
 }

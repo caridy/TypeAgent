@@ -17,12 +17,15 @@ Pay attention to the following:
 */
 
 export interface IBaseAgent {
+  // Use this to inform the result of the program execution. This is the last step of a program.
   OutputMessage(
-    message: string, // Detailed output message with the result of the program execution in natural language.
-    data: { [key: string]: string; } // Key-value pairs of any data that is relevant to the output message or can help to interpret the output message.
+    // Detailed explanation in natural language for the result of the program and the "data" gathered from previous steps that is relevant to the output.
+    message: string,
+    // Key:value pairs for data described by "message", where the key is string, and value is a ResultReference. This data would be formatted in yaml format and concatenated to the end of the "message".
+    data: { [key: string]: unknown; } 
   ): string;
 
-  // Use this to inform that the request cannot be handled.
+  // Use this to inform that the request cannot be handled. This is the last step of a program.
   ErrorMessage(
     // Reason must be as detailed as possible, including information about missing data that if provided, the program can be created.
     reason: string

@@ -1,12 +1,10 @@
+import fs from "fs";
+import path from "path";
 import { Agent, Asyncify } from "./agent";
 import { ChatMessage, OpenAIModel } from "./model";
-import type {
-  EscalationMessage,
-  FinalAnswer,
-  OrchestratorInterface,
-  ReflectionRecord,
-} from "./orchestratorSchema";
+
 import { Tracer } from "./tracer";
+import { stringify } from "json-to-pretty-yaml";
 
 import {
   Program,
@@ -18,36 +16,15 @@ import {
   error,
   success,
 } from "typechat";
+import { ReActBaseCapabilities, ReflectionRecord } from "./orchestratorSchema";
 
-const programSchemaText = `// A program consists of a sequence of function calls that are evaluated in order.
-export type Program = {
-    "@steps": FunctionCall[];
-}
+// importing the schema source for OrchestratorInterface needed to construct the orchestrator prompt
+const programSchemaText = fs.readFileSync(
+  path.join(__dirname, "orchestratorProgram.d.ts"),
+  "utf8"
+);
 
-// A function call specifies a function name and a list of argument expressions. Arguments may contain
-// nested function calls and result references.
-export type FunctionCall = {
-    // Name of the function
-    "@func": string;
-    // Arguments for the function, if any
-    "@args"?: Expression[];
-};
-
-// An expression is a JSON value, a function call, or a reference to the result of a preceding expression.
-export type Expression = JsonValue | FunctionCall | ResultReference;
-
-// A JSON value is a string, a number, a boolean, null, an object, or an array. Function calls and result
-// references can be nested in objects and arrays.
-export type JsonValue = string | number | boolean | null | { [x: string]: Expression } | Expression[];
-
-// A result reference represents the value of an expression from a preceding step.
-export type ResultReference = {
-    // Index of the previous expression in the "@steps" array
-    "@ref": number;
-};
-`;
-
-export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
+export class OrchestratorPlanner implements Asyncify<ReActBaseCapabilities> {
   #agents: Map<string, Agent>;
   #turns = 0;
   #maxTurns: number;
@@ -56,6 +33,7 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
   #model: OpenAIModel;
   #validator: TypeChatJsonValidator<Program>;
   #messages: ChatMessage[] = [];
+  #request: string;
 
   constructor(
     model: OpenAIModel,
@@ -65,6 +43,7 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
       maxTurns?: number;
       maxRepairAttempts?: number;
       tracer: Tracer;
+      request: string;
     }
   ) {
     this.#model = model;
@@ -75,33 +54,32 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
     this.#validator = createJsonValidator<Program>(schema, "Program");
     this.#validator.createModuleTextFromJson = createModuleTextFromProgram;
     this.#messages.push(this.#createSystemPrompt());
+    this.#request = options.request;
   }
 
   async WriteThoughts(input: ReflectionRecord): Promise<ReflectionRecord> {
     return input;
   }
 
-  async DeadEnd(Escalation: string): Promise<EscalationMessage> {
-    return {
-      Error: "DeadEnd",
-      Escalation,
-    };
+  async ErrorMessage(reason: string): Promise<string> {
+    return `Sorry, I cannot complete the task. ${reason}`;
   }
 
-  async CompleteAssignment(answer: string): Promise<FinalAnswer> {
-    return {
-      CompleteAssignment: answer,
-    };
+  async OutputMessage(message: string, data: { [key: string]: unknown; } ): Promise<string> {
+    if (Object.keys(data).length > 0) {
+      return `${message}\n${stringify(data)}`;
+    }
+    return message;
   }
 
   async NextTurn(): Promise<void> {
     return;
   }
 
-  async plan(request: string): Promise<EscalationMessage | FinalAnswer> {
-    this.#messages.push(this.#createRequestPrompt(request));
+  async plan(): Promise<string> {
+    this.#messages.push(this.#createRequestPrompt());
     const result = await this.#execute();
-    return result.pop() as FinalAnswer | EscalationMessage;
+    return result.pop() as string;
   }
 
   async #execute(): Promise<unknown[]> {
@@ -140,8 +118,9 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
             this.#turns
           } where each position in the array corresponds to every ResultReference:\n` +
           `\`\`\`\n${JSON.stringify(results, null, 2)}\n\`\`\`\n` +
-          `With this new information, write a new program to solve the original user's request.\n` +
-          `The following is the next turn JSON program object ready for evaluation:\n`,
+          `With this new information, write a new TurnProgram to solve the original user's request:\n` +
+          `"""\n${this.#request}\n"""\n` +
+          `The following is the TurnProgram as a JSON object ready for evaluation:\n`,
       });
       return await this.#execute();
     }
@@ -170,12 +149,20 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
           prompt,
         }
       );
-      const program = await agent.plan(prompt, childTracer);
-      const response = await agent.execute(program, childTracer);
-      await childTracer.success({
-        response,
-      });
-      return response;
+      try {
+        const program = await agent.plan(prompt, childTracer);
+        const response = await agent.execute(program, childTracer);
+        await childTracer.success({
+          response,
+        });
+        return response;
+      } catch (e) {
+        const { message } = (e as Error);
+        await childTracer.error('Internal Error: Agent ${name} failed to handle request', {
+          message
+        });
+        return message;
+      }
     }
     throw new TypeError(`Invalid Agent ${name}`);
   }
@@ -186,18 +173,18 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
       content:
         `You are a service that translates user requests into programs represented as JSON using the following TypeScript definitions:\n` +
         `\`\`\`\n${programSchemaText}\`\`\`\n` +
-        `The programs can call functions from the API defined in the following TypeScript definitions:\n` +
+        `A TurnProgram can call functions from the API defined in the following TypeScript definitions:\n` +
         `\`\`\`\n${this.#validator.schema}\`\`\`\n`,
     };
   }
 
-  #createRequestPrompt(request: string): ChatMessage {
+  #createRequestPrompt(): ChatMessage {
     return {
       role: "user",
       content:
         `The following is a user request:\n` +
-        `"""\n${request}\n"""\n` +
-        `The following is the user request translated into a JSON program object with 2 spaces of indentation and no properties with the value undefined:\n`,
+        `"""\n${this.#request}\n"""\n` +
+        `The following is the user request translated into a JSON TurnProgram object with 2 spaces of indentation and no properties with the value undefined:\n`,
     };
   }
 
@@ -205,9 +192,9 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
     return {
       role: "user",
       content:
-        `The JSON program object is invalid for the following reason:\n` +
+        `The JSON TurnProgram object is invalid for the following reason:\n` +
         `"""\n${validationError}\n"""\n` +
-        `The following is a revised JSON program object:\n`,
+        `The following is a revised JSON TurnProgram object:\n`,
     };
   }
 
@@ -256,28 +243,50 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
   }
 
   #extendedValidation(data: Program): Result<Program> {
-    const len = data["@steps"].length;
-    const firstStep = data["@steps"][0];
-    const lastStep = data["@steps"][len - 1];
-    if (
-      lastStep["@func"] === "CompleteAssignment" ||
-      lastStep["@func"] === "DeadEnd"
-    ) {
-      return len === 2 && firstStep["@func"] === "WriteThoughts"
-        ? success(data)
-        : error(
-            `Invalid final turn program structure, it should have only 2 steps, WriteThoughts and CompleteAssignment or DeadEnd`
-          );
-    } else if (lastStep["@func"] === "NextTurn") {
-      return len > 2 && firstStep["@func"] === "WriteThoughts"
-        ? success(data)
-        : error(
-            `Invalid turn program structure. If it needs to collect more data from IAgents.*, then it should have at least 3 steps, WriteThoughts, FunctionCalls and NextTurn, otherwise it should be a final turn program structure`
-          );
+    const errors: string[] = [];
+    const steps = data["@steps"];
+    const len = steps.length;
+    const firstStep = steps[0];
+    const lastStep = steps[len - 1];
+
+    if (lastStep["@func"] === "OutputMessage" || lastStep["@func"] === "ErrorMessage") {
+      for (let i = 1; i < len - 1; i++) {
+        const step = steps[i];
+        if (step["@func"] !== "WriteThoughts") {
+          errors.push(`Invalid final turn program structure, which can only call WriteThoughts and OutputMessage or ErrorMessage. Step ${i + 1} appears to be collecting more information from agents, if that's the case, then call NextTurn as the last step.`);
+        }
+      }
+    } else {
+      if (lastStep["@func"] !== "NextTurn") {
+        errors.push(`Invalid program structure, it is neither a final turn program structure nor a turn program structure`);
+      }
+
+      if (firstStep["@func"] !== "WriteThoughts") {
+        errors.push(`Invalid turn program structure. The first step should be using @func=WriteThoughts`);
+      }
+
+      let hasCalledSomethingElse = false;
+      for (let i = 1; i < len - 1; i++) {
+        const step = steps[i];
+        if (step["@func"] === "WriteThoughts") {
+          if (hasCalledSomethingElse) {
+            errors.push(`Invalid usage of @func=WriteThoughts in step ${i + 1}, it can only appear before calling IAgent.*`);
+          }
+        } else {
+          hasCalledSomethingElse = true;
+        }
+      }
+
+      if (!hasCalledSomethingElse) {
+        errors.push(`Invalid turn program structure. If you have all necessary information to answer the original question, call OutputMessage as the last step with the results, otherwise you must calls to IAgent.* to gather more information before calling NextTurn`);
+      }
     }
-    return error(
-      `Invalid program structure, it is neither a final turn program structure nor a turn program structure`
-    );
+
+    if (errors.length > 0) {
+      return error(errors.join('\n'));
+    }
+
+    return success(data);
   }
 
   /**

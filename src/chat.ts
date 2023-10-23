@@ -7,7 +7,6 @@ import {
   TypeChatJsonTranslator,
   createJsonTranslator,
   Result,
-  TypeChatLanguageModel,
   createLanguageModel,
 } from "typechat";
 import { LastUserMessage } from "./chatInputSchema";
@@ -50,14 +49,10 @@ export class Chat {
     if (question.programSpecs && question.answerExpected) {
       // Delegate the question to the orchestrator agent
       const response = await this.#agent.execute(question.programSpecs, childTracer);
-      const responseText =
-        "CompleteAssignment" in response
-          ? response.CompleteAssignment
-          : response.Escalation;
       return await this.#produceAnswer(
         messages,
         question,
-        responseText,
+        response,
         childTracer
       );
     }

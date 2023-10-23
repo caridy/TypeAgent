@@ -39,4 +39,7 @@ export type Answer = {
 
     // If the assistant's response is a question, the text of that question to be presented to the user. must be defined if isQuestion is true.
     question?: string;
+
+    // Is the assistant's response coherant, does it answer the question?.
+    isAGoodAnswer: boolean;
 };
