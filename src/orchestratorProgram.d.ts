@@ -1,7 +1,4 @@
 // A program consists of a sequence of function calls that are evaluated in order.
-export type Program = {
-  "@steps": FunctionCall[];
-}
 
 // A function call specifies a function name and a list of argument expressions. Arguments may contain
 // nested function calls and result references.
@@ -69,6 +66,7 @@ type AgentCall = Omit<AgentFunction, "@func"> & {
 
 // The following two declarations define a specific program type within the ReAct Method:
 
+// Use this when you need to gather more information by calling an agent.
 export type IntermediateProgram = {
   "@steps": [
     WriteThoughtsStep,
@@ -77,6 +75,7 @@ export type IntermediateProgram = {
   ];
 };
 
+// Use this when the program can interprets the results of previous turns, and produces a final output.
 export type FinalProgram = {
   "@steps": [
     WriteThoughtsStep,

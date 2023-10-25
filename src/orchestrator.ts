@@ -65,11 +65,10 @@ export class OrchestratorAgent {
     return [...this.#capabilities.entries()]
       .map(
         ([name, description]) =>
-          `// ${description}
+          `/* ${description} */
 ${name}(
-  // a program specifications for an agent to write a program that can answer the question. the agent does not have access to the Orchestrator information, this prompt must be self contained and include all relevant values inline.
-  prompt: string
-): string;`
+  prompt: ProgramSpecs
+): ProgramOutput;`
       )
       .join("\n");
   }

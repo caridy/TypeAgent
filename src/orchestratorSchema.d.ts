@@ -26,12 +26,12 @@ export type ReActBaseCapabilities = {
   // Use this to inform that the request cannot be handled.
   ErrorMessage(
     reason: string
-  ): string;
+  ): ProgramOutput;
   // Use this to inform the result of the program execution.
   OutputMessage(
     message: string,
     data: { [key: string]: unknown; }
-  ): string;
+  ): ProgramOutput;
   NextTurn(): void;
 }
 
@@ -41,3 +41,9 @@ export type ReflectionRecord = {
   critique: string; // Is the result is correct, meet the requirements and based on the information provided?
   observation: string; // Analysis result of the previous turn if any
 };
+
+// The program specifications describes the task in natural language for the agent to write a program that can carry on the task and respond in natural language. Since the agent does not have access to the Orchestrator information, specs must be self contained and include all relevant values inline.
+export type ProgramSpecs = string;
+
+// The program output represents the respond from the agent given the program specifications. When the agent succeed, the output message is a text in plain english explaining the result, followed by the data in yaml. When the agent errors, it is the error message in english.
+export type ProgramOutput = string;

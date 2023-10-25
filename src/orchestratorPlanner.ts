@@ -7,7 +7,6 @@ import { Tracer } from "./tracer";
 import { stringify } from "json-to-pretty-yaml";
 
 import {
-  Program,
   Result,
   Success,
   TypeChatJsonValidator,
@@ -17,6 +16,7 @@ import {
   success,
 } from "typechat";
 import { ReActBaseCapabilities, ReflectionRecord } from "./orchestratorSchema";
+import { TurnProgram } from "./orchestratorProgram";
 
 // importing the schema source for OrchestratorInterface needed to construct the orchestrator prompt
 const programSchemaText = fs.readFileSync(
@@ -31,7 +31,7 @@ export class OrchestratorPlanner implements Asyncify<ReActBaseCapabilities> {
   #maxRepairAttempts: number;
   #rootTracer: Tracer;
   #model: OpenAIModel;
-  #validator: TypeChatJsonValidator<Program>;
+  #validator: TypeChatJsonValidator<TurnProgram>;
   #messages: ChatMessage[] = [];
   #request: string;
 
@@ -51,7 +51,7 @@ export class OrchestratorPlanner implements Asyncify<ReActBaseCapabilities> {
     this.#maxTurns = options?.maxTurns ?? 3;
     this.#maxRepairAttempts = options?.maxRepairAttempts ?? 2;
     this.#rootTracer = options.tracer;
-    this.#validator = createJsonValidator<Program>(schema, "Program");
+    this.#validator = createJsonValidator<TurnProgram>(schema, "TurnProgram");
     this.#validator.createModuleTextFromJson = createModuleTextFromProgram;
     this.#messages.push(this.#createSystemPrompt());
     this.#request = options.request;
@@ -198,7 +198,7 @@ export class OrchestratorPlanner implements Asyncify<ReActBaseCapabilities> {
     };
   }
 
-  async #translate(tracer: Tracer): Promise<Success<Program>> {
+  async #translate(tracer: Tracer): Promise<Success<TurnProgram>> {
     let repairAttempts = 0;
     while (true) {
       const { role, content } = await this.#model.chat(
@@ -237,32 +237,71 @@ export class OrchestratorPlanner implements Asyncify<ReActBaseCapabilities> {
       if (repairAttempts > this.#maxRepairAttempts) {
         // remove the last error to avoid carrying that over to the next turn
         this.#messages.splice(-1);
-        throw new Error('Invalid Program');
+        throw new Error('Unable to construct a program to answer the the question.');
       }
     }
   }
 
-  #extendedValidation(data: Program): Result<Program> {
+  #extendedValidation(data: TurnProgram): Result<TurnProgram> {
     const errors: string[] = [];
     const steps = data["@steps"];
     const len = steps.length;
     const firstStep = steps[0];
     const lastStep = steps[len - 1];
 
+    let hasAgentCall = false;
+    let hasOutputMessage = false;
+    let howManyOutputMessage = 0;
+    let hasErrorMessage = false;
+    let howManyErrorMessage = 0;
+    let hasNextTurn = false;
+    let hasWriteThoughts = false;
+
+    for (let i = 0; i < len - 1; i++) {
+      const step = steps[i];
+      if (step["@func"] === "WriteThoughts") {
+        hasWriteThoughts = true;
+      } else if (step["@func"] === "OutputMessage") {
+        howManyOutputMessage++;
+        hasOutputMessage = true;
+      } else if (step["@func"] === "ErrorMessage") {
+        howManyErrorMessage++;
+        hasErrorMessage = true;
+      } else if (step["@func"] === "NextTurn") {
+        hasNextTurn = true;
+      } else {
+        hasAgentCall = true;
+      }
+    }
+
+    // correcting common mistakes from GPT3.5
+    if (hasAgentCall && !hasNextTurn && !hasOutputMessage && !hasErrorMessage) {
+      // usually means we are gathering info via AgentCall
+      // @ts-ignore this step is safe to add
+      steps.push({ "@func": "NextTurn", "@args": [] });
+      hasNextTurn = true;
+    }
+
+    if (!hasWriteThoughts || firstStep["@func"] !== "WriteThoughts") {
+      errors.push(`Invalid TurnProgram. The first step must be WriteThoughtsStep.`);
+    }
     if (lastStep["@func"] === "OutputMessage" || lastStep["@func"] === "ErrorMessage") {
-      for (let i = 1; i < len - 1; i++) {
-        const step = steps[i];
-        if (step["@func"] !== "WriteThoughts") {
-          errors.push(`Invalid final turn program structure, which can only call WriteThoughts and OutputMessage or ErrorMessage. Step ${i + 1} appears to be collecting more information from agents, if that's the case, then call NextTurn as the last step.`);
-        }
+      if (hasAgentCall) {
+        errors.push(`Ambigous TurnProgram. If more information is needed, you must use a IntermediateProgram that relies on at least one AgentCallStep, else, you must use a FinalProgram with the following steps: [WriteThoughtsStep, OutputMessageStep | ErrorMessageStep] to interpret the information gathered, and finish.`);
+      }
+      if (howManyErrorMessage > 1) {
+        errors.push(`Invalid TurnProgram. Only one ErrorMessageStep is allowed as the last step of a FinalProgram.`);
+      }
+      if (howManyOutputMessage > 1) {
+        errors.push(`Invalid TurnProgram. Only one OutputMessageStep is allowed as the last step of a FinalProgram.`);
       }
     } else {
-      if (lastStep["@func"] !== "NextTurn") {
-        errors.push(`Invalid program structure, it is neither a final turn program structure nor a turn program structure`);
-      }
-
-      if (firstStep["@func"] !== "WriteThoughts") {
-        errors.push(`Invalid turn program structure. The first step should be using @func=WriteThoughts`);
+      if (!hasAgentCall) {
+        if (lastStep["@func"] === "NextTurn") {
+          errors.push(`Ambiguous TurnProgram. No new information is being collected by an AgentCallStep, however the program is not a valid FinalProgram because it is calling NextTurnStep. If you have all the necessary information, use OutputMessageStep or ErrorMessageStep instead to make it a FinalProgram, otherwise you must add at least one AgentCallStep before calling NextTurnStep to make it a valid IntermediateProgram.`);
+        } else {
+          errors.push(`Invalid FinalProgram. You must use OutputMessageStep or ErrorMessageStep in the final step of the program.`);
+        }
       }
 
       let hasCalledSomethingElse = false;
@@ -270,15 +309,11 @@ export class OrchestratorPlanner implements Asyncify<ReActBaseCapabilities> {
         const step = steps[i];
         if (step["@func"] === "WriteThoughts") {
           if (hasCalledSomethingElse) {
-            errors.push(`Invalid usage of @func=WriteThoughts in step ${i + 1}, it can only appear before calling IAgent.*`);
+            errors.push(`Invalid WriteThoughtsStep in step ${i + 1}, it can only appear before an AgentCall step.`);
           }
         } else {
           hasCalledSomethingElse = true;
         }
-      }
-
-      if (!hasCalledSomethingElse) {
-        errors.push(`Invalid turn program structure. If you have all necessary information to answer the original question, call OutputMessage as the last step with the results, otherwise you must calls to IAgent.* to gather more information before calling NextTurn`);
       }
     }
 
@@ -292,7 +327,7 @@ export class OrchestratorPlanner implements Asyncify<ReActBaseCapabilities> {
   /**
    * Evaluates a JSON program using a simple interpreter. It returns an array of results, one for each step.
    */
-  async #evaluate(program: Program, parentTracer: Tracer): Promise<unknown[]> {
+  async #evaluate(program: TurnProgram, parentTracer: Tracer): Promise<unknown[]> {
     const evaluate = async (expr: unknown): Promise<unknown> => {
       return typeof expr === "object" && expr !== null
         ? await evaluateObject(expr as Record<string, unknown>)
