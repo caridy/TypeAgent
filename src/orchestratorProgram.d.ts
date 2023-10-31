@@ -1,86 +1,43 @@
-// A program consists of a sequence of function calls that are evaluated in order.
-
-// A function call specifies a function name and a list of argument expressions. Arguments may contain
-// nested function calls and result references.
-export type FunctionCall = {
-  // Name of the function
-  "@func": string;
-  // Arguments for the function, if any
-  "@args"?: Expression[];
+// The schema defines the Plan JSON Objects. If steps are defined, outputMessage should not be present, and vice versa.
+export type Plan = {
+  thoughts: WriteThoughts;
+  // Use this when the output message can be constructed based on information from memory to fulfill the request.
+  // Detailed explanation in natural language of the results including relevant information gathered from memory that is relevant to the output. You can add structured data in yaml at the end of the message. This message is intended to be interpreted by an LLM, be precise. Cannot be empty.
+  outputMessage?: string,
+  // indicates whether or not the request was resolved.
+  isError: boolean,
+  // Use this when the information available from memory is not enough to fullfil the request, but it is enough to ask an agent for more information.
+  // You must avoid using AskAgentStep to request information from agents if the information is already available in memory.
+  steps?: AskAgentStep[];
 };
 
-// An expression is a JSON value, a function call, or a reference to the result of a preceding expression.
-export type Expression = JsonValue | FunctionCall | ResultReference;
-
-// A JSON value is a string, a number, a boolean, null, an object, or an array. Function calls and result
-// references can be nested in objects and arrays.
-export type JsonValue = string | number | boolean | null | { [x: string]: Expression } | Expression[];
-
-// A result reference represents the value of an expression from a preceding step.
-export type ResultReference = {
-  // Index of the previous expression in the "@steps" array
-  "@ref": number;
-};
-
-// There are special types of programs that implement a ReAct Method, which represents a multi-turn program
-// where each turn is created based on the previous intermediate program and its results, this way every turn can be optimized
-// to arrive to the final output in the shorter number of steps. The following declarations are definig a turn program:
-
-interface WriteThoughtsStep extends FunctionCall {
-  "@func": "WriteThoughts";
-  "@args": [unknown];
+// Use this on every plan to reasoning about the plan itself before completing the plan.
+export interface WriteThoughts {
+  reasoning: string; // Reason or thoughts about the plan. Cannot be empty
+  highLevelPlan: string[]; // Short bulleted list that conveys the high-level plan. Cannot be empty
+  critique: string; // Is the result correct, meet the requirements and based on the information provided and from memory?
+  observation: string; // Does the memory contains a match for the request or relevant parts of the request?
 }
 
-interface OutputMessageStep extends FunctionCall {
-  "@func": "OutputMessage";
-  "@args": [
-    // message: Detailed explanation in natural language for the result of the program and the "data" gathered from previous steps that is relevant to the output.
-    string,
-    // Data: A key-value pairs for data described by "message", where the key is string, and value represents the result from a preceding step. This data would be formatted in yaml format and concatenated to the end of the "message".
-    { [key: string]: unknown; }
-  ]
+// Use this to ask an agent for additional information to be stored in memory.
+export type AskAgentStep = {
+  type: "AskAgent";
+  // The name of the agent from AgentNames
+  agent: AgentNames;
+  // A question for the agent in natural language to gather necessary information to complete the request. Since the agent does not have access to the request, your state or memory, the specs must be self contained and include all relevant values inline.
+  question: string;
 }
 
-interface ErrorMessageStep extends FunctionCall {
-  "@func": "ErrorMessage";
-  "@args": [
-    // A reason for the error, it must be as detailed as possible, including information about missing data that if provided, the program can be created.
-    string
-  ]
-}
+type AgentNames = "/*AGENT_NAMES_PLACEHOLDER*/";
 
-interface NextTurnStep extends FunctionCall {
-  "@func": "NextTurn";
-  "@args": []
-}
+/* This is your memory, this allow you to recollect facts to construct plans.
+When you receive a request, start by checking this memory for relevant information.
+If relevant information is available, use it to generate a plan. */
+const Memory = [/*AGENT_MEMORY*/];
 
-type AgentFunction = {
-  "@func": string;
-  "@args"?: Expression[];
-}
-
-type ExcludeFunctionNames = "WriteThoughts" | "OutputMessage" | "ErrorMessage" | "NextTurn";
-type AgentCall = Omit<AgentFunction, "@func"> & {
-  "@func": Exclude<AgentFunction["@func"], ExcludeFunctionNames>;
-}
-
-// The following two declarations define a specific program type within the ReAct Method:
-
-// Use this when you need to gather more information by calling an agent.
-export type IntermediateProgram = {
-  "@steps": [
-    WriteThoughtsStep,
-    ...AgentCall[],
-    NextTurnStep
-  ];
-};
-
-// Use this when the program can interprets the results of previous turns, and produces a final output.
-export type FinalProgram = {
-  "@steps": [
-    WriteThoughtsStep,
-    OutputMessageStep | ErrorMessageStep,
-  ];
-};
-
-export type TurnProgram = IntermediateProgram | FinalProgram;
+/* Pay attention to the following guidelines:
+- Memory is your most valuable asset. Use it wisely.
+- Calling an agent is expensive, avoid calling them when data is available from memory.
+- When you are not sure, error out.
+- You must not assume agents that are not defined.
+*/
