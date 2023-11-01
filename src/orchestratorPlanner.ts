@@ -12,7 +12,7 @@ import {
   error,
   success,
 } from "typechat";
-import { AskAgentStep, Plan } from "./orchestratorProgram";
+import { AskAgent, Plan } from "./orchestratorProgram";
 
 // importing the schema source for OrchestratorInterface needed to construct the orchestrator prompt
 const planSchemaTextTemplate = fs.readFileSync(
@@ -21,7 +21,7 @@ const planSchemaTextTemplate = fs.readFileSync(
 );
 
 function isIntermediatePlan(plan: Plan): boolean {
-  return plan.steps !== undefined;
+  return plan.action !== undefined;
 }
 
 function isFinalPlan(plan: Plan): boolean {
@@ -88,10 +88,10 @@ export class OrchestratorPlanner {
       }
     );
     const plan = await this.#createPlan(childTracer);
-    if (isIntermediatePlan(plan) && plan.steps) {
-      const results = await this.#evaluateSteps(plan.steps, childTracer);
+    if (isIntermediatePlan(plan) && plan.action) {
+      const results = await this.#evaluateAction(plan.action, childTracer);
       await childTracer.success({
-        refs: results,
+        answer: results,
       });
       return await this.#execute();
     } else {
@@ -181,39 +181,29 @@ export class OrchestratorPlanner {
   #extendedValidation(plan: Plan): Result<Plan> {
     const errors: string[] = [];
 
-    let hasAgentCall = false;
-    let memoryMatches = 0;
-    let agentCalls = 0;
-
-    if (isIntermediatePlan(plan) && plan.steps) {
-      if (plan.steps && plan.steps.length === 0) {
-        errors.push(`Invalid Plan. steps cannot be empty.`);
-      }
-      for (let i = 0; i < plan.steps.length; i++) {
-        const step = plan.steps[i];
-        hasAgentCall = true;
-        agentCalls++;
-        if (this.#operations.find(({ question }) => question === step.question)) {
-          errors.push(`Invalid Plan. steps[${i}]'s question "${step.question}" already has an answer in Memory. You must not ask the same question twice.`);
-          memoryMatches++;
-        }
-      }
+    if (this.#turns === 1 && !isIntermediatePlan(plan)) {
+      errors.push(`Invalid Plan. You must use an action to gather information, or produce an error.`);
     }
 
-    if (isFinalPlan(plan)) {
-      if (plan.isError && this.#turns === 1) {
-        errors.push(`Invalid Plan. You must use an IntermediatePlan to gather information, or produce an error.`);
+    if (isIntermediatePlan(plan)) {
+      if (this.#operations.find(({ question }) => question === plan.action?.question)) {
+        errors.push(`Invalid Plan. action.question "${plan.action?.question}" already has an answer in Memory. You must not ask the same question twice.`);
+        // errors.push(`All the information needed to solve the request is available in Memory, you should be able to write a FinalPlan with the outputMessage.`);
       }
+      if (isFinalPlan(plan)) {
+        errors.push(`Ambigous Plan. You cannot have an action and outputMessage at the same time. If more information is needed, you must use an action to AskAgent, else, you must use outputMessage.`);
+      }
+    } else if (isFinalPlan(plan)) {
       if (!plan.outputMessage) {
-        errors.push(`Invalid FinalPlan. outputMessage cannot be empty.`);
+        errors.push(`Invalid Plan. outputMessage cannot be empty.`);
       }
-      if (hasAgentCall) {
-        errors.push(`Ambigous Plan. If more information is needed, you must use a IntermediatePlan that relies on at least one AskAgentStep, else, you must use a FinalPlan to interpret the information from memory, and finish.`);
+      if (isIntermediatePlan(plan)) {
+        errors.push(`Ambigous Plan. You cannot have an action and outputMessage at the same time. If more information is needed, you must use an action to AskAgent, else, you must use outputMessage.`);
       }
-    }
-
-    if (agentCalls > 0 && memoryMatches === agentCalls) {
-      errors.push(`All the information needed to solve the request is available in Memory, you should be able to write a FinalPlan with the outputMessage.`);
+    } else {
+      if (!isFinalPlan(plan) && !isIntermediatePlan(plan)) {
+        errors.push(`Ambigous Plan. You must have an action or an outputMessage as part of the plan. If more information is needed, you must use an action to AskAgent, else, you must use outputMessage.`);
+      }
     }
 
     if (errors.length > 0) {
@@ -224,13 +214,10 @@ export class OrchestratorPlanner {
   }
 
   /**
-   * Evaluates a list of steps. It returns an array of results, one for each step.
+   * Evaluates an action. It returns the answer from the agent.
    */
-  async #evaluateSteps(steps: AskAgentStep[], parentTracer: Tracer): Promise<unknown[]> {
-    const evaluateStep = async (step: AskAgentStep): Promise<unknown> => {
-      return await this.#handleCall(parentTracer, step.agent, step.question);
-    };
-    return await Promise.all(steps.map(evaluateStep));
+  async #evaluateAction(action: AskAgent, parentTracer: Tracer): Promise<unknown> {
+    return await this.#handleCall(parentTracer, action.agent, action.question);
   }
 
   #renderCapabilities() {
