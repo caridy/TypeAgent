@@ -7,7 +7,6 @@ import {
   TypeChatJsonTranslator,
   createJsonTranslator,
   Result,
-  TypeChatLanguageModel,
   createLanguageModel,
 } from "typechat";
 import { LastUserMessage } from "./chatInputSchema";
@@ -25,13 +24,16 @@ const outputSchema = fs.readFileSync(
 export class Chat {
   #env: Record<string, string | undefined>;
   #agent: OrchestratorAgent;
+  #instructions: string;
 
   constructor(
     env: Record<string, string | undefined>,
-    agent: OrchestratorAgent
+    agent: OrchestratorAgent,
+    schema: string,
   ) {
     this.#env = env;
     this.#agent = agent;
+    this.#instructions = schema;
   }
 
   async analyze(
@@ -40,7 +42,7 @@ export class Chat {
   ): Promise<Answer | null> {
     // Create a new tracer for this method call
     parentTracer = parentTracer ?? (await createDefaultTracer());
-    const childTracer = await parentTracer.sub(`Chat`, "tool", {
+    const childTracer = await parentTracer.sub(`Conversational`, "tool", {
       messages,
     });
 
@@ -49,18 +51,22 @@ export class Chat {
 
     if (question.programSpecs && question.answerExpected) {
       // Delegate the question to the orchestrator agent
-      const response = await this.#agent.execute(question.programSpecs, childTracer);
-      const responseText =
-        "CompleteAssignment" in response
-          ? response.CompleteAssignment
-          : response.Escalation;
-      return await this.#produceAnswer(
+      let response: string;
+      try {
+        response = await this.#agent.execute(question.programSpecs, childTracer);
+      } catch (e) {
+        response = (e as Error).message;
+      }
+      const answer = await this.#produceAnswer(
         messages,
         question,
-        responseText,
+        response,
         childTracer
       );
+      childTracer.success({ answer });
+      return answer;
     }
+    childTracer.success({ endOfConversation: true });
     // in case the last message is not a question, we return null (e.g.: the user says "thank you")
     return null;
   }
@@ -74,7 +80,7 @@ export class Chat {
     // dummy context for now
     const context = { today: new Date().toISOString() };
 
-    const childTracer = await parentTracer.sub(`Question.Analyzer`, "tool", {
+    const childTracer = await parentTracer.sub(`Conversational.Question`, "tool", {
       messages,
       context,
     });
@@ -84,7 +90,10 @@ export class Chat {
       createJsonTranslator<LastUserMessage>(
         {
           async complete(prompt: string): Promise<Result<string>> {
-            return await model.complete(prompt);
+            const llmTracer = await childTracer.sub(`Conversational.Question.Analyzer`, "llm", { prompt });
+            const response = await model.complete(prompt);
+            llmTracer.success({ response });
+            return response;
           },
         },
         inputSchema,
@@ -113,7 +122,7 @@ export class Chat {
     parentTracer: Tracer
   ): Promise<Answer> {
     parentTracer = parentTracer ?? (await createDefaultTracer());
-    const childTracer = await parentTracer.sub(`Answer.Analyzer`, "tool", {
+    const childTracer = await parentTracer.sub(`Conversational.Answer`, "tool", {
       messages,
       question,
       answerText,
@@ -124,7 +133,10 @@ export class Chat {
       createJsonTranslator<Answer>(
         {
           async complete(prompt: string): Promise<Result<string>> {
-            return await model.complete(prompt);
+            const llmTracer = await childTracer.sub(`Conversational.Answer.Analyzer`, "llm", { prompt });
+            const response = await model.complete(prompt);
+            llmTracer.success({ response });
+            return response;
           },
         },
         outputSchema,
@@ -150,11 +162,13 @@ export class Chat {
     conversation: ChatMessage[],
     context: Record<string, unknown>
   ): string {
-    return `Given the following contextual information about the conversation:\n` +
+    return `Given the following conditions:\n` +
+      `${JSON.stringify(this.#instructions)}\n` +
+      `Given the following contextual information about the conversation:\n` +
       `${JSON.stringify(context)}\n` +
-      `And given the following messages log:\n` +
+      `And given the following conversation history:\n` +
       `${JSON.stringify(conversation)}\n` +
-      `Produce the "LastUserMessage" object`;
+      `Produce the "LastUserMessage" object that best describes the ask from the user:`;
   }
 
   #createAnswerPrompt(
@@ -162,13 +176,13 @@ export class Chat {
     question: LastUserMessage,
     answerText: string,
   ): string {
-    return `Given the following messages log:\n` +
+    return `Given the following conditions:\n` +
+      `${JSON.stringify(this.#instructions)}\n` +
+      `Given the following conversation history:\n` +
       `${JSON.stringify(conversation)}\n` +
-      `Given the following inferred question from the message log:\n` +
-      `${JSON.stringify(question)}\n` +
-      `And given the answer in english:\n` +
+      `And given a tentative answer in english:\n` +
       `${answerText}\n` +
-      `Produce the "Answer" object`;
+      `Produce the "Answer" object that best describes the answer to the question:`;
   }
 
 }

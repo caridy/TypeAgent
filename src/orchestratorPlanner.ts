@@ -1,107 +1,70 @@
-import { Agent, Asyncify } from "./agent";
-import { ChatMessage, OpenAIModel } from "./model";
-import type {
-  EscalationMessage,
-  FinalAnswer,
-  OrchestratorInterface,
-  ReflectionRecord,
-} from "./orchestratorSchema";
+import fs from "fs";
+import path from "path";
+import { Agent } from "./agent";
+
 import { Tracer } from "./tracer";
 
 import {
-  Program,
   Result,
-  Success,
-  TypeChatJsonValidator,
-  createJsonValidator,
-  createModuleTextFromProgram,
+  TypeChatJsonTranslator,
+  createJsonTranslator,
+  createLanguageModel,
   error,
   success,
 } from "typechat";
+import { AskAgent, Plan } from "./orchestratorProgram";
 
-const programSchemaText = `// A program consists of a sequence of function calls that are evaluated in order.
-export type Program = {
-    "@steps": FunctionCall[];
+// importing the schema source for OrchestratorInterface needed to construct the orchestrator prompt
+const planSchemaTextTemplate = fs.readFileSync(
+  path.join(__dirname, "orchestratorProgram.d.ts"),
+  "utf8"
+);
+
+function isIntermediatePlan(plan: Plan): boolean {
+  return plan.action !== undefined;
 }
 
-// A function call specifies a function name and a list of argument expressions. Arguments may contain
-// nested function calls and result references.
-export type FunctionCall = {
-    // Name of the function
-    "@func": string;
-    // Arguments for the function, if any
-    "@args"?: Expression[];
-};
+function isFinalPlan(plan: Plan): boolean {
+  return plan.outputMessage !== undefined;
+}
 
-// An expression is a JSON value, a function call, or a reference to the result of a preceding expression.
-export type Expression = JsonValue | FunctionCall | ResultReference;
-
-// A JSON value is a string, a number, a boolean, null, an object, or an array. Function calls and result
-// references can be nested in objects and arrays.
-export type JsonValue = string | number | boolean | null | { [x: string]: Expression } | Expression[];
-
-// A result reference represents the value of an expression from a preceding step.
-export type ResultReference = {
-    // Index of the previous expression in the "@steps" array
-    "@ref": number;
-};
-`;
-
-export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
+export class OrchestratorPlanner {
+  #env: Record<string, string | undefined>;
   #agents: Map<string, Agent>;
   #turns = 0;
   #maxTurns: number;
-  #maxRepairAttempts: number;
   #rootTracer: Tracer;
-  #model: OpenAIModel;
-  #validator: TypeChatJsonValidator<Program>;
-  #messages: ChatMessage[] = [];
+  #operations: { question: string, answer: string }[] = [];
+  #request: string;
 
   constructor(
-    model: OpenAIModel,
+    env: Record<string, string | undefined>,
     agents: Map<string, Agent>,
-    schema: string,
     options: {
       maxTurns?: number;
       maxRepairAttempts?: number;
       tracer: Tracer;
+      request: string;
     }
   ) {
-    this.#model = model;
+    this.#env = env;
     this.#agents = agents;
     this.#maxTurns = options?.maxTurns ?? 3;
-    this.#maxRepairAttempts = options?.maxRepairAttempts ?? 2;
     this.#rootTracer = options.tracer;
-    this.#validator = createJsonValidator<Program>(schema, "Program");
-    this.#validator.createModuleTextFromJson = createModuleTextFromProgram;
-    this.#messages.push(this.#createSystemPrompt());
+    this.#request = options.request;
   }
 
-  async WriteThoughts(input: ReflectionRecord): Promise<ReflectionRecord> {
-    return input;
+  async ErrorMessage(reason: string): Promise<string> {
+    return `Sorry, I cannot complete the task. ${reason}`;
   }
 
-  async DeadEnd(Escalation: string): Promise<EscalationMessage> {
-    return {
-      Error: "DeadEnd",
-      Escalation,
-    };
+  async OutputMessage(message: string): Promise<string> {
+    return message;
   }
 
-  async CompleteAssignment(answer: string): Promise<FinalAnswer> {
-    return {
-      CompleteAssignment: answer,
-    };
-  }
-
-  async NextTurn(): Promise<void> {
-    return;
-  }
-
-  async plan(request: string): Promise<EscalationMessage | FinalAnswer> {
-    this.#messages.push(this.#createRequestPrompt(request));
+  async plan(): Promise<string> {
     const result = await this.#execute();
-    return result.pop() as FinalAnswer | EscalationMessage;
+    return result.pop() as string;
   }
 
   async #execute(): Promise<unknown[]> {
@@ -120,210 +83,150 @@ export class OrchestratorPlanner implements Asyncify<OrchestratorInterface> {
       `Orchestrator.Thinking.Turn[${this.#turns}]`,
       "tool",
       {
-        messages: this.#messages,
+        prompt: this.#request,
+        cachedResults: this.#operations,
       }
     );
-    const response = await this.#translate(childTracer);
-    const program = response.data;
-    const results = await this.#evaluate(program, childTracer);
-    await childTracer.success({
-      refs: results,
-    });
-    const len = program["@steps"].length;
-    const lastStep = program["@steps"][len - 1];
-    if (lastStep["@func"] === "NextTurn") {
-      // recursive call to execute the next turn
-      this.#messages.push({
-        role: "user",
-        content:
-          `The following are the results of each step's FunctionCall from turn #${
-            this.#turns
-          } where each position in the array corresponds to every ResultReference:\n` +
-          `\`\`\`\n${JSON.stringify(results, null, 2)}\n\`\`\`\n` +
-          `With this new information, write a new program to solve the original user's request.\n` +
-          `The following is the next turn JSON program object ready for evaluation:\n`,
+    const plan = await this.#createPlan(childTracer);
+    if (isIntermediatePlan(plan) && plan.action) {
+      const results = await this.#evaluateAction(plan.action, childTracer);
+      await childTracer.success({
+        answer: results,
       });
       return await this.#execute();
+    } else {
+      // final step was reached
+      return [plan.outputMessage];
     }
-    // final step was reached
-    return results;
   }
 
   async #handleCall(
     parentTracer: Tracer,
     name: string,
-    args: unknown[]
+    programSpec: string,
   ): Promise<unknown> {
-    if (name in this) {
-      // calling a method of the planner as part of the program
-      // @ts-ignore
-      return await this[name as keyof OrchestratorPlanner](...args);
-    }
-    // delegating to an agent as part of the program
+    // delegating to an agent as part of the plan
     const agent = this.#agents.get(name);
     if (agent) {
-      const [prompt] = args as [string];
       const childTracer = await parentTracer.sub(
         `Orchestrator.${name}`,
         "chain",
         {
-          prompt,
+          prompt: programSpec,
         }
       );
-      const program = await agent.plan(prompt, childTracer);
-      const response = await agent.execute(program, childTracer);
-      await childTracer.success({
-        response,
-      });
-      return response;
+      try {
+        const plan = await agent.plan(programSpec, childTracer);
+        const response = await agent.execute(plan, childTracer);
+        this.#operations.push({ question: programSpec, answer: response });
+        await childTracer.success({
+          response,
+        });
+        return response;
+      } catch (e) {
+        const { message } = (e as Error);
+        this.#operations.push({ question: programSpec, answer: message });
+        await childTracer.error('Internal Error: Agent ${name} failed to handle request', {
+          message
+        });
+        return message;
+      }
     }
     throw new TypeError(`Invalid Agent ${name}`);
   }
 
-  #createSystemPrompt(): ChatMessage {
-    return {
-      role: "system",
-      content:
-        `You are a service that translates user requests into programs represented as JSON using the following TypeScript definitions:\n` +
-        `\`\`\`\n${programSchemaText}\`\`\`\n` +
-        `The programs can call functions from the API defined in the following TypeScript definitions:\n` +
-        `\`\`\`\n${this.#validator.schema}\`\`\`\n`,
-    };
+  #createRequestPrompt(): string {
+    return planSchemaTextTemplate
+      .replace("\"/*AGENT_NAMES_PLACEHOLDER*/\"", this.#renderCapabilities())
+      .replace("[/*AGENT_MEMORY*/]", JSON.stringify(this.#operations, null, 2));
   }
 
-  #createRequestPrompt(request: string): ChatMessage {
-    return {
-      role: "user",
-      content:
-        `The following is a user request:\n` +
-        `"""\n${request}\n"""\n` +
-        `The following is the user request translated into a JSON program object with 2 spaces of indentation and no properties with the value undefined:\n`,
-    };
-  }
+  async #createPlan(
+    parentTracer: Tracer
+  ): Promise<Plan> {
+    const childTracer = await parentTracer.sub(`Orchestrator.Planner`, "tool", {
+      prompt: this.#request,
+    });
 
-  #createRepairPrompt(validationError: string): ChatMessage {
-    return {
-      role: "user",
-      content:
-        `The JSON program object is invalid for the following reason:\n` +
-        `"""\n${validationError}\n"""\n` +
-        `The following is a revised JSON program object:\n`,
-    };
-  }
-
-  async #translate(tracer: Tracer): Promise<Success<Program>> {
-    let repairAttempts = 0;
-    while (true) {
-      const { role, content } = await this.#model.chat(
-        this.#messages,
-        tracer
+    const model = createLanguageModel(this.#env);
+    const schema = this.#createRequestPrompt();
+    const PlanTranslator: TypeChatJsonTranslator<Plan> =
+      createJsonTranslator<Plan>(
+        {
+          async complete(prompt: string): Promise<Result<string>> {
+            const llmTracer = await childTracer.sub(`Orchestrator.TypeChat`, "llm", { prompt });
+            const response = await model.complete(prompt);
+            llmTracer.success({ response });
+            return response;
+          },
+        },
+        schema,
+        "Plan"
       );
-      if (repairAttempts > 0) {
-        // remove the program and error from the previous repair attempt from history
-        this.#messages.splice(-2);
-      }
-      this.#messages.push({ role, content });
-      const childRun = await tracer.sub("TypeChat.Validation", "parser", {
-        content,
+    PlanTranslator.validateInstance = this.#extendedValidation.bind(this);
+    
+    const response = await PlanTranslator.translate(`${this.#request}. Utilize information from memory when possible to avoid asking an agent again.`);
+    if (!response.success) {
+      await childTracer.error(response.message, {
+        response,
       });
-      const startIndex = content.indexOf("{");
-      const endIndex = content.lastIndexOf("}");
-      if (!(startIndex >= 0 && endIndex > startIndex)) {
-        await childRun.error(`Response is not a valid JSON structure`, {
-          generations: [content],
-        });
-      } else {
-        const jsonText = content.slice(startIndex, endIndex + 1);
-        const schemaValidation = this.#validator.validate(jsonText);
-        const validation = schemaValidation.success
-          ? this.#extendedValidation(schemaValidation.data)
-          : schemaValidation;
-        if (validation.success) {
-          await childRun.success(validation);
-          return validation;
-        }
-        await childRun.error(`Program validation failed`, validation);
-        this.#messages.push(this.#createRepairPrompt(validation.message));
-      }
-      // attempting to repair the program
-      repairAttempts++;
-      if (repairAttempts > this.#maxRepairAttempts) {
-        // remove the last error to avoid carrying that over to the next turn
-        this.#messages.splice(-1);
-        throw new Error('Invalid Program');
-      }
+      throw new Error(`Unable to construct a plan to answer the the question.`);
     }
+    await childTracer.success({
+      response,
+    });
+    return response.data;
   }
 
-  #extendedValidation(data: Program): Result<Program> {
-    const len = data["@steps"].length;
-    const firstStep = data["@steps"][0];
-    const lastStep = data["@steps"][len - 1];
-    if (
-      lastStep["@func"] === "CompleteAssignment" ||
-      lastStep["@func"] === "DeadEnd"
-    ) {
-      return len === 2 && firstStep["@func"] === "WriteThoughts"
-        ? success(data)
-        : error(
-            `Invalid final turn program structure, it should have only 2 steps, WriteThoughts and CompleteAssignment or DeadEnd`
-          );
-    } else if (lastStep["@func"] === "NextTurn") {
-      return len > 2 && firstStep["@func"] === "WriteThoughts"
-        ? success(data)
-        : error(
-            `Invalid turn program structure. If it needs to collect more data from IAgents.*, then it should have at least 3 steps, WriteThoughts, FunctionCalls and NextTurn, otherwise it should be a final turn program structure`
-          );
+  #extendedValidation(plan: Plan): Result<Plan> {
+    const errors: string[] = [];
+
+    if (this.#turns === 1 && !isIntermediatePlan(plan)) {
+      errors.push(`Invalid Plan. You must use an action to gather information, or produce an error.`);
     }
-    return error(
-      `Invalid program structure, it is neither a final turn program structure nor a turn program structure`
-    );
+
+    if (isIntermediatePlan(plan)) {
+      if (this.#operations.find(({ question }) => question === plan.action?.question)) {
+        errors.push(`Invalid Plan. action.question "${plan.action?.question}" already has an answer in Memory. You must not ask the same question twice.`);
+        // errors.push(`All the information needed to solve the request is available in Memory, you should be able to write a FinalPlan with the outputMessage.`);
+      }
+      if (isFinalPlan(plan)) {
+        errors.push(`Ambigous Plan. You cannot have an action and outputMessage at the same time. If more information is needed, you must use an action to AskAgent, else, you must use outputMessage.`);
+      }
+    } else if (isFinalPlan(plan)) {
+      if (!plan.outputMessage) {
+        errors.push(`Invalid Plan. outputMessage cannot be empty.`);
+      }
+      if (isIntermediatePlan(plan)) {
+        errors.push(`Ambigous Plan. You cannot have an action and outputMessage at the same time. If more information is needed, you must use an action to AskAgent, else, you must use outputMessage.`);
+      }
+    } else {
+      if (!isFinalPlan(plan) && !isIntermediatePlan(plan)) {
+        errors.push(`Ambigous Plan. You must have an action or an outputMessage as part of the plan. If more information is needed, you must use an action to AskAgent, else, you must use outputMessage.`);
+      }
+    }
+
+    if (errors.length > 0) {
+      return error(errors.join('\n'));
+    }
+
+    return success(plan);
   }
 
   /**
-   * Evaluates a JSON program using a simple interpreter. It returns an array of results, one for each step.
+   * Evaluates an action. It returns the answer from the agent.
    */
-  async #evaluate(program: Program, parentTracer: Tracer): Promise<unknown[]> {
-    const evaluate = async (expr: unknown): Promise<unknown> => {
-      return typeof expr === "object" && expr !== null
-        ? await evaluateObject(expr as Record<string, unknown>)
-        : expr;
-    };
-
-    const evaluateObject = async (obj: Record<string, unknown>) => {
-      if (obj.hasOwnProperty("@ref")) {
-        const index = obj["@ref"];
-        if (typeof index === "number" && index < results.length) {
-          return results[index];
-        }
-      } else if (obj.hasOwnProperty("@func")) {
-        const func = obj["@func"];
-        const args = obj.hasOwnProperty("@args") ? obj["@args"] : [];
-        if (typeof func === "string" && Array.isArray(args)) {
-          return await this.#handleCall(
-            parentTracer,
-            func,
-            await evaluateArray(args)
-          );
-        }
-      } else if (Array.isArray(obj)) {
-        return evaluateArray(obj);
-      } else {
-        const values = await Promise.all(Object.values(obj).map(evaluate));
-        return Object.fromEntries(
-          Object.keys(obj).map((k, i) => [k, values[i]])
-        );
-      }
-    };
-
-    const evaluateArray = (array: unknown[]) => {
-      return Promise.all(array.map(evaluate));
-    };
-
-    const results: unknown[] = [];
-    for (const expr of program["@steps"]) {
-      results.push(await evaluate(expr));
-    }
-    return results;
+  async #evaluateAction(action: AskAgent, parentTracer: Tracer): Promise<unknown> {
+    return await this.#handleCall(parentTracer, action.agent, action.question);
   }
+
+  #renderCapabilities() {
+    return [...this.#agents.entries()]
+      .map(
+        ([name, { description }]) =>
+          `/* ${description} */\n  "${name}"`
+      )
+      .join(" |\n  ");
+  }
+
 }

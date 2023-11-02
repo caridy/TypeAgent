@@ -9,6 +9,7 @@ import {
   evaluateJsonProgram,
   success,
 } from "typechat";
+import { stringify } from "json-to-pretty-yaml";
 import { Tracer } from "./tracer";
 import { ChatMessage, OpenAIModel } from "./model";
 import { IBaseAgent } from "./agentSchema";
@@ -64,10 +65,10 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
 
   async OutputMessage(
     message: string,
-    data: { [key: string]: string; },
+    data: { [key: string]: unknown; },
   ): Promise<string> {
     if (Object.keys(data).length > 0) {
-      return `${message}\n\n${JSON.stringify(data, null, 2)}`;
+      return `${message}\n${stringify(data)}`;
     }
     return message;
   }
@@ -228,7 +229,14 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
         `Invalid error program structure, it should have only 1 step, calling ErrorMessage`
       );
     } else if (lastStep["@func"] === "OutputMessage") {
-      return len > 1 ? success(data) : error(
+      if (len > 1) {
+        // @ts-ignore
+        const stepData = lastStep["@args"][1] as Record<string, unknown>;
+        return Reflect.ownKeys(stepData) ? success(data) : error(
+          `Invalid OutputMessage FunctionCall structure. It needs to define at least one key:value pair as part of the data argument.`
+        );
+      }
+      return error(
         `Invalid program structure. It needs to collect more data by calling IAgent.* APIS before calling OutputMessage`
       );
     }
