@@ -21,6 +21,7 @@ export type Tracer = {
       [key: string]: unknown;
     }
   ): Promise<void>;
+  get run(): unknown;
   success(output: { [key: string]: unknown }): Promise<void>;
 };
 
@@ -60,6 +61,9 @@ export async function createLangSmithTracer(
         await r.end(output);
         await r.patchRun();
       },
+      get run() {
+        return r;
+      }
     };
   };
 
@@ -73,6 +77,7 @@ export async function createDefaultTracer(): Promise<Tracer> {
     },
     async error() {},
     async success() {},
+    get run() { return null; }
   };
   return tracer;
 }
@@ -96,5 +101,6 @@ export async function createConsoleTracer(
       console.log(`[${type}: ${name}] Ok`);
       console.debug(JSON.stringify({ input: data, output }, null, 2));
     },
+    get run() { return null; }
   };
 }

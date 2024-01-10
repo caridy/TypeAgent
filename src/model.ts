@@ -1,68 +1,66 @@
-import OpenAI from "openai";
+import {
+  Result,
+  PromptSection,
+  TypeChatLanguageModel,
+} from "typechat";
+import { ChatOpenAI } from "@langchain/openai";
+import { SystemMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
+import { CallbackManager } from "@langchain/core/callbacks/manager";
 import { Tracer } from "./tracer";
 
-function missingEnvironmentVariable(name: string): never {
-  throw new Error(`Missing model configuration variable: ${name}`);
+function createPromptPreamble(messages: PromptSection[]): BaseMessage[] {
+  return messages.map((msg) => {
+    if (msg.role === "system") {
+      return new SystemMessage(msg.content);
+    } else {
+      return new HumanMessage(msg.content);
+    }
+  });
 }
 
-export type ChatMessage = {
-  role: "function" | "user" | "system" | "assistant";
-  content: string;
-};
+export class OpenAIModel implements TypeChatLanguageModel {
+  #model: ChatOpenAI;
+  #runName: string;
+  #tags: string[];
+  #parentTracer: Tracer | undefined;
 
-export class OpenAIModel {
-  #model: string;
-  #openai: OpenAI;
-
-  constructor(env: Record<string, string | undefined>) {
-    if (!env.OPENAI_API_KEY) {
-      missingEnvironmentVariable("OPENAI_API_KEY");
-    }
-    const apiKey = env.OPENAI_API_KEY;
-    this.#model = env.OPENAI_MODEL ?? missingEnvironmentVariable("OPENAI_MODEL");
-    this.#openai = new OpenAI({
-      apiKey: apiKey,
-    });    
+  constructor(env: Record<string, string | undefined>, runName: string, tags: string[]) {
+    this.#runName = runName;
+    this.#tags = tags;
+    // TODO: this should also have the json mode in the future
+    this.#model = new ChatOpenAI({
+      temperature: 0,
+      modelName: env.OPENAI_MODEL as string,
+      maxTokens: 4096,
+    });
   }
 
-  async complete(prompt: string, parentTracer: Tracer): Promise<string> {
-    const config = {
-      model: this.#model,
-      prompt,
-      temperature: 0,
-      n: 1,
-    };
-    const childRun = await parentTracer.sub(`TypeAgent.Model.${this.#model}`, "llm", config);
-    const completion = await this.#openai.completions.create(config);
-    const { choices } = completion;
-    if (choices[0].text) {
-      await childRun.success({ choices });
-      return choices[0].text;
-    }
-    await childRun.error('Invalid Completion Response', {
-      choices,
-    });
-    throw new Error(`Invalid Completion Response`);
+  set tracer(tracer: Tracer) {
+    this.#parentTracer = tracer;
   }
 
-  async chat(messages: ChatMessage[], parentTracer: Tracer): Promise<ChatMessage> {
-    const config = {
-      model: this.#model,
-      messages,
-      temperature: 0,
-      n: 1,
-    };
-    const childRun = await parentTracer.sub(`TypeAgent.Model.${this.#model}`, "llm", config);
-    const completion = await this.#openai.chat.completions.create(config);
-    const { choices } = completion;
-    if (choices[0].message?.content) {
-      await childRun.success({ choices });
-      return choices[0].message as ChatMessage;
+  get tracer(): Tracer | undefined {
+    return this.#parentTracer;
+  }
+
+  async complete(prompt: string | PromptSection[]): Promise<Result<string>> {
+    if (!this.#parentTracer) {
+      throw new Error(`Missing Model.tracer value.`);
     }
-    await childRun.error('Invalid Completion Response', {
-      choices,
+    prompt = typeof prompt === "string" ? [{ role: "user", content: prompt }] : prompt;
+    const messages = createPromptPreamble(prompt);
+    // get a langchain callback from the langsmith parent tracer when possible
+    const callbacks = (this.#parentTracer.run as any).id ? new CallbackManager((this.#parentTracer.run as any).id) : [];
+    const response = await this.#model.predictMessages(messages, {
+      runName: this.#runName,
+      tags: this.#tags,
+      callbacks,
     });
-    throw new Error(`Invalid Completion Response`);
+    const { content } = response;
+    return {
+      success: true,
+      data: content.toString(),
+    };
   }
 
 }

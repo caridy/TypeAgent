@@ -21,6 +21,7 @@ export abstract class Agent {
 
   model: OpenAIModel;
   schema: string;
+  currentTracer: Tracer | undefined;
 
   #fallbackModel: OpenAIModel | undefined;
   #planner: AgentPlanner<Agent>;
@@ -35,6 +36,27 @@ export abstract class Agent {
     this.#planner = new AgentPlanner(this, this.model, this.schema, {
       fallbackModel: this.#fallbackModel,
     });
+  }
+
+  async executeSkill(name: string, args: unknown[], parentTracer?: Tracer): Promise<string> {
+    parentTracer = parentTracer ?? await createDefaultTracer();
+    const childTracer = await parentTracer.sub(`IAgent.${name}`, "tool",{
+      args,
+    });
+    let response;
+    try {
+      this.currentTracer = childTracer;
+      // calling a method of the agent as part of the program
+      // @ts-ignore
+      response = await this[name as keyof T](...args);
+      await childTracer.success({
+        response
+      });
+    } catch (e) {
+      await childTracer.error('Internal Error[skill=IAgent.${name}]]: ' + (e as Error).message);
+      throw e;
+    }
+    return response;
   }
 
   async plan(prompt: string, parentTracer?: Tracer): Promise<Program> {

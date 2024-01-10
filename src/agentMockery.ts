@@ -1,7 +1,6 @@
-import { Program, createJsonValidator, createModuleTextFromProgram, getData } from "typechat";
+import { Program, PromptSection, createJsonValidator, createModuleTextFromProgram, getData } from "typechat";
 import { Agent } from "./agent";
 import { Tracer, createDefaultTracer } from "./tracer";
-import { ChatMessage } from ".";
 
 const MockPromptTemplate = `You are a mock data generator. Try to help to generate the mocked data based on a TypeScript function declaration.
 The following is the "schema.ts" module source:
@@ -34,13 +33,13 @@ export abstract class AgentMock extends Agent {
 
   public data: MockedData = {};
 
-  async execute(program: Program, parentTracer?: Tracer): Promise<string> {
+  async execute(program: Program, parentTracer: Tracer): Promise<string> {
     this.data = await this.mock(program, parentTracer);
     const response = super.execute(program, parentTracer);
     return response;
   }
 
-  async mock(program: Program, parentTracer?: Tracer): Promise<MockedData> {
+  async mock(program: Program, parentTracer: Tracer): Promise<MockedData> {
     parentTracer = parentTracer ?? await createDefaultTracer();
     const validator = createJsonValidator<Program>(this.schema, "Program");
     validator.createModuleTextFromJson = createModuleTextFromProgram;
@@ -55,7 +54,12 @@ export abstract class AgentMock extends Agent {
     );
     const message = this.#createSystemPrompt(moduleSource);
     try {
-      const { content } = await this.model.chat([message], childTracer);
+      this.model.tracer = childTracer;
+      const response = await this.model.complete([message]);
+      if (!response.success) {
+        throw new Error(`Invalid Completion Response`);
+      }
+      const content = response.data;
       const startIndex = content.indexOf("{");
       const endIndex = content.lastIndexOf("}");
       const data = JSON.parse(content.slice(startIndex, endIndex + 1));
@@ -68,7 +72,7 @@ export abstract class AgentMock extends Agent {
     }
   }
   
-  #createSystemPrompt(moduleSource: string): ChatMessage {
+  #createSystemPrompt(moduleSource: string): PromptSection {
     return {
       role: "user",
       content: MockPromptTemplate.replace('{schema}', this.schema).replace('{moduleSource}', moduleSource),

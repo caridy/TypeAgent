@@ -1,13 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { Tracer, createDefaultTracer } from "./tracer";
-import { ChatMessage } from "./model";
 import { OrchestratorAgent } from "./orchestrator";
 import {
   TypeChatJsonTranslator,
   createJsonTranslator,
-  Result,
-  createLanguageModel,
+  PromptSection,
 } from "typechat";
 import { LastUserMessage } from "./chatInputSchema";
 
@@ -16,29 +14,31 @@ const inputSchema = fs.readFileSync(
   "utf8"
 );
 import { Answer } from "./chatOutputSchema";
+import { OpenAIModel } from "./model";
 const outputSchema = fs.readFileSync(
   path.join(__dirname, "chatOutputSchema.d.ts"),
   "utf8"
 );
 
 export class Chat {
-  #env: Record<string, string | undefined>;
+#env: Record<string, string | undefined>;
   #agent: OrchestratorAgent;
   #instructions: string;
 
   constructor(
-    env: Record<string, string | undefined>,
+env: Record<string, string | undefined>,
     agent: OrchestratorAgent,
     schema: string,
   ) {
-    this.#env = env;
+this.#env = env;
     this.#agent = agent;
     this.#instructions = schema;
   }
 
   async analyze(
-    messages: ChatMessage[],
-    parentTracer?: Tracer
+    messages: PromptSection[],
+    parentTracer: Tracer,
+    logStep: (content: string) => void
   ): Promise<Answer | null> {
     // Create a new tracer for this method call
     parentTracer = parentTracer ?? (await createDefaultTracer());
@@ -53,7 +53,7 @@ export class Chat {
       // Delegate the question to the orchestrator agent
       let response: string;
       try {
-        response = await this.#agent.execute(question.programSpecs, childTracer);
+        response = await this.#agent.execute(question.programSpecs, childTracer, logStep);
       } catch (e) {
         response = (e as Error).message;
       }
@@ -72,7 +72,7 @@ export class Chat {
   }
 
   async #extractQuestionInfo(
-    messages: ChatMessage[],
+    messages: PromptSection[],
     parentTracer: Tracer
   ): Promise<LastUserMessage> {
     parentTracer = parentTracer ?? (await createDefaultTracer());
@@ -85,17 +85,11 @@ export class Chat {
       context,
     });
 
-    const model = createLanguageModel(this.#env);
+    const model = new OpenAIModel(this.#env, 'Conversational.Question.TypeChat', ["conversational", "question", "analyzer"]);
+    model.tracer = childTracer;
     const questionAnalysisTranslator: TypeChatJsonTranslator<LastUserMessage> =
       createJsonTranslator<LastUserMessage>(
-        {
-          async complete(prompt: string): Promise<Result<string>> {
-            const llmTracer = await childTracer.sub(`Conversational.Question.Analyzer`, "llm", { prompt });
-            const response = await model.complete(prompt);
-            llmTracer.success({ response });
-            return response;
-          },
-        },
+        model,
         inputSchema,
         "LastUserMessage"
       );
@@ -116,7 +110,7 @@ export class Chat {
   }
 
   async #produceAnswer(
-    messages: ChatMessage[],
+    messages: PromptSection[],
     question: LastUserMessage,
     answerText: string,
     parentTracer: Tracer
@@ -128,17 +122,11 @@ export class Chat {
       answerText,
     });
 
-    const model = createLanguageModel(this.#env);
+    const model = new OpenAIModel(this.#env, 'Conversational.Answer.TypeChat', ["conversational", "answer", "analyzer"]);
+    model.tracer = childTracer;
     const answerAnalysisTranslator: TypeChatJsonTranslator<Answer> =
       createJsonTranslator<Answer>(
-        {
-          async complete(prompt: string): Promise<Result<string>> {
-            const llmTracer = await childTracer.sub(`Conversational.Answer.Analyzer`, "llm", { prompt });
-            const response = await model.complete(prompt);
-            llmTracer.success({ response });
-            return response;
-          },
-        },
+        model,
         outputSchema,
         "Answer"
       );
@@ -159,7 +147,7 @@ export class Chat {
   }
 
   #createQuestionPrompt(
-    conversation: ChatMessage[],
+    conversation: PromptSection[],
     context: Record<string, unknown>
   ): string {
     return `Given the following conditions:\n` +
@@ -172,8 +160,8 @@ export class Chat {
   }
 
   #createAnswerPrompt(
-    conversation: ChatMessage[],
-    question: LastUserMessage,
+    conversation: PromptSection[],
+    _question: LastUserMessage,
     answerText: string,
   ): string {
     return `Given the following conditions:\n` +
