@@ -26,7 +26,8 @@ export class OrchestratorAgent {
 
   async execute(
     prompt: string,
-    parentTracer?: Tracer
+    parentTracer: Tracer,
+    logStep?: (content: string) => void
   ): Promise<string> {
     parentTracer = parentTracer ?? (await createDefaultTracer());
     const tracer = await parentTracer.sub(`Orchestrator`, "chain", {
@@ -41,7 +42,8 @@ export class OrchestratorAgent {
         maxTurns: this.#maxTurns,
         tracer,
         request: prompt,
-      }
+      },
+      (content: string) => logStep ? logStep(content) : undefined,
     );
     const result = await planner.plan();
     await tracer.success({ response: result });

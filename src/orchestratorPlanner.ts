@@ -8,11 +8,11 @@ import {
   Result,
   TypeChatJsonTranslator,
   createJsonTranslator,
-  createLanguageModel,
   error,
   success,
 } from "typechat";
 import { AskAgent, Plan } from "./orchestratorProgram";
+import { OpenAIModel } from "./model";
 
 // importing the schema source for OrchestratorInterface needed to construct the orchestrator prompt
 const planSchemaTextTemplate = fs.readFileSync(
@@ -36,6 +36,7 @@ export class OrchestratorPlanner {
   #rootTracer: Tracer;
   #operations: { question: string, answer: string }[] = [];
   #request: string;
+  #logStep: (content: string) => void;
 
   constructor(
     env: Record<string, string | undefined>,
@@ -45,13 +46,15 @@ export class OrchestratorPlanner {
       maxRepairAttempts?: number;
       tracer: Tracer;
       request: string;
-    }
+    },
+    logStep: (content: string) => void
   ) {
     this.#env = env;
     this.#agents = agents;
     this.#maxTurns = options?.maxTurns ?? 3;
     this.#rootTracer = options.tracer;
     this.#request = options.request;
+    this.#logStep = logStep;
   }
 
   async ErrorMessage(reason: string): Promise<string> {
@@ -148,23 +151,17 @@ export class OrchestratorPlanner {
       prompt: this.#request,
     });
 
-    const model = createLanguageModel(this.#env);
+    const model = new OpenAIModel(this.#env, 'Orchestrator.TypeChat', ["orchestrator", "llm", "planner"]);
+    model.tracer = childTracer;
     const schema = this.#createRequestPrompt();
     const PlanTranslator: TypeChatJsonTranslator<Plan> =
       createJsonTranslator<Plan>(
-        {
-          async complete(prompt: string): Promise<Result<string>> {
-            const llmTracer = await childTracer.sub(`Orchestrator.TypeChat`, "llm", { prompt });
-            const response = await model.complete(prompt);
-            llmTracer.success({ response });
-            return response;
-          },
-        },
+        model,
         schema,
         "Plan"
       );
     PlanTranslator.validateInstance = this.#extendedValidation.bind(this);
-    
+
     const response = await PlanTranslator.translate(`${this.#request}. Utilize information from memory when possible to avoid asking an agent again.`);
     if (!response.success) {
       await childTracer.error(response.message, {
@@ -217,6 +214,7 @@ export class OrchestratorPlanner {
    * Evaluates an action. It returns the answer from the agent.
    */
   async #evaluateAction(action: AskAgent, parentTracer: Tracer): Promise<unknown> {
+    this.#logStep(action.speak);
     return await this.#handleCall(parentTracer, action.agent, action.question);
   }
 

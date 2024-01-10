@@ -1,5 +1,6 @@
 import {
   Program,
+  PromptSection,
   Result,
   Success,
   TypeChatJsonValidator,
@@ -11,9 +12,9 @@ import {
 } from "typechat";
 import { stringify } from "json-to-pretty-yaml";
 import { Tracer } from "./tracer";
-import { ChatMessage, OpenAIModel } from "./model";
 import { IBaseAgent } from "./agentSchema";
-import { Asyncify } from "./agent";
+import { Agent, Asyncify } from "./agent";
+import { OpenAIModel } from "./model";
 
 const programSchemaText = `// A program consists of a sequence of function calls that are evaluated in order.
 export type Program = {
@@ -115,7 +116,7 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
   }
 
   async #createProgram(model: OpenAIModel, prompt: string, tracer: Tracer): Promise<Program> {
-    const messages: ChatMessage[] = [
+    const messages: PromptSection[] = [
       this.#createSystemPrompt(),
       this.#createRequestPrompt(prompt),
     ];
@@ -151,7 +152,7 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
     return await evaluateJsonProgram(program, this.#handleCall.bind(this, tracer)) as string;
   }
 
-  #createSystemPrompt(): ChatMessage {
+  #createSystemPrompt(): PromptSection {
     return {
       role: "system",
       content:
@@ -162,7 +163,7 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
     };
   }
 
-  #createRequestPrompt(request: string): ChatMessage {
+  #createRequestPrompt(request: string): PromptSection {
     return {
       role: "user",
       content:
@@ -172,7 +173,7 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
     };
   }
 
-  #createRepairPrompt(validationError: string): ChatMessage {
+  #createRepairPrompt(validationError: string): PromptSection {
     return {
       role: "user",
       content:
@@ -182,15 +183,20 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
     };
   }
 
-  async #translate(model: OpenAIModel, messages: ChatMessage[], tracer: Tracer): Promise<Success<Program>> {
+  async #translate(model: OpenAIModel, messages: PromptSection[], tracer: Tracer): Promise<Success<Program>> {
     let repairAttempts = 0;
     while (true) {
-      const { role, content } = await model.chat(messages, tracer);
+      model.tracer = tracer;
+      const response = await model.complete(messages);
+      if (!response.success) {
+        throw new Error(`Invalid Completion Response`);
+      }
+      const content = response.data;
       if (repairAttempts > 0) {
         // remove the program and error from the previous repair attempt from history
         messages.splice(-2);
       }
-      messages.push({ role, content });
+      messages.push({ role: "assistant", content });
       const childRun = await tracer.sub("TypeChat.Validation", "parser", {
         content,
       });
@@ -252,16 +258,7 @@ export class AgentPlanner<T extends object> implements Asyncify<IBaseAgent> {
       return await this[name as keyof AgentPlanner](...args);
     }
     if (name in this.#skills) {
-      const childTracer = await parentTracer.sub(`IAgent.${name}`, "tool",{
-        args,
-      });
-      // calling a method of the agent as part of the program
-      // @ts-ignore
-      const response = await this.#skills[name as keyof T](...args);
-      await childTracer.success({
-        response
-      });
-      return response;
+      return await (this.#skills as Agent).executeSkill(name, args, parentTracer);
     }
     throw new TypeError(`Invalid Skill ${name}`);
   }
