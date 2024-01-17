@@ -43,6 +43,3 @@ You can build TypeAgent from source:
 ```
 npm run build
 ```
-
-To see TypeAgent in action, we recommend exploring the [TypeAgent example projects](./examples). You can try them on your local machine or in a GitHub Codespace.
-
