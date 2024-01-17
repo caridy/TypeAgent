@@ -8,6 +8,7 @@ node_modules/
 *.bat
 
 # Local development and debugging
+.DS_Store
 .scratch/
 .vscode
 **/.vscode/*
