@@ -1,4 +1,5 @@
 export * from './agent';
+export * from './supervisor';
 export * from './orchestrator';
 export * from './model';
 export * from './chat';

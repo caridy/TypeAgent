@@ -37,11 +37,14 @@
     "README.md"
   ],
   "dependencies": {
+    "@langchain/core": "^0.1.29",
+    "@langchain/langgraph": "^0.0.7",
+    "@langchain/openai": "^0.0.14",
     "json-to-pretty-yaml": "^1.2.2",
-    "langsmith": "^0.0.41",
-    "@langchain/core": "^0.1.11",
-    "@langchain/openai": "^0.0.10",
-    "typechat": "^0.0.10"
+    "langchain": "^0.1.19",
+    "langsmith": "^0.1.1",
+    "typechat": "microsoft/TypeChat#main",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/node": "^20.3.3",

@@ -1,9 +1,12 @@
 import fs from "fs";
 import path from "path";
-import { createDefaultTracer, Tracer } from "./tracer";
+import { createDefaultTracer, Tracer, createLangSmithTracer } from "./tracer";
 import { AgentPlanner } from "./agentPlanner";
 import { OpenAIModel } from "./model";
 import { Program } from "typechat";
+import { CallbackManagerForToolRun } from "@langchain/core/callbacks/manager";
+import { DynamicStructuredTool } from "@langchain/core/tools";
+import { z } from "zod";
 
 // importing the schema source for IBaseAgent needed to construct the agent prompt
 const IBaseAgentSchema = fs.readFileSync(path.join(__dirname, "agentSchema.d.ts"), "utf8");
@@ -103,6 +106,36 @@ export abstract class Agent {
       await tracer.error('Internal Error');
       throw e;
     }
+  }
+
+  // useful to integrate this agent as a tool in a langchain program using lang graph
+  createAgentAsTool() {
+    const { name, description } = this;
+    return new DynamicStructuredTool({
+      name: name,
+      description: description,
+      schema: z.object({
+        prompt: z.string().describe(`A detailed self-contained prompt for the ${name}`),
+      }),
+      func: async ({ prompt }: { prompt: string }, config: CallbackManagerForToolRun | undefined) => {
+        // @ts-ignore protected value access
+        const parentRunId = config?.runId;
+        const childTracer = await createLangSmithTracer(
+          `AgentNode: ${name}`,
+          "chain",
+          { prompt },
+          parentRunId,
+        );
+        try {
+          const plan = await this.plan(prompt, childTracer);
+          const response = await this.execute(plan, childTracer);
+          return response;
+        } catch (e) {
+          const { message } = (e as Error);
+          return message;
+        }
+      },
+    });
   }
 
   #generateAgentSchema(agentSchema: string): string {
