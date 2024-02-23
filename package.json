@@ -1,6 +1,6 @@
 {
   "name": "typeagent",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "description": "TypeAgent is an experimental opinionated library that makes it easy to build generative AI Agents using typescript.",
   "keywords": [
