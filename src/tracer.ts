@@ -31,15 +31,20 @@ export type Tracer = {
 export async function createLangSmithTracer(
   name: string,
   type: TracerType,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  parentRunId?: string
 ): Promise<Tracer> {
   const { RunTree } = await import("langsmith");
-
-  const rootRun = new RunTree({
+  const runConfig = {
     name: name,
     run_type: type,
     inputs: data,
-  });
+  };
+  if (parentRunId) {
+    // @ts-ignore hack to create a fake parent_run with the right ID
+    runConfig.parent_run = new RunTree({ id: parentRunId, run_type: "chain", });
+  }
+  const rootRun = new RunTree(runConfig);
   await await rootRun.postRun();
 
   const createTracer = (r: typeof rootRun): Tracer => {
