@@ -34,6 +34,20 @@ LANGCHAIN_API_KEY=ADD_YOURS_HERE # https://smith.langchain.com/
 LANGCHAIN_PROJECT=YourProjectName
 ```
 
+## Einstein
+
+Einstein is a Salesforce Endpoint. Use this instead of OpenAI for Salesforce related work.
+
+For Einstein to work, you must define the following environment variables:
+
+```env
+EINSTEIN_API_KEY=ADD_YOURS_HERE
+EINSTEIN_URL=ADD_YOURS_HERE 
+EINSTEIN_MODEL=gpt-4 
+EINSTEIN_ORG_ID=ADD_YOURS_HERE
+EINSTEIN_CLIENT_FEATURE_ID=ADD_YOURS_HERE
+```
+
 # Contributing
 
 Just send the pull request.
